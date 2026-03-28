@@ -11,13 +11,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_FILE="/tmp/JOINT_RELEASE_NOTES.md"
+OUTPUT_FILE="/tmp/PLATFORM_RELEASE_NOTES.md"
 
 export OUTPUT_FILE
 
 echo ""
 echo "══════════════════════════════════════════════════════════════"
-echo "  Joint Release Notes — Local Test"
+echo "  Transpara Platform Release Notes — Local Test"
 echo "══════════════════════════════════════════════════════════════"
 echo ""
 

@@ -1,4 +1,4 @@
-name: Generate Joint Release Notes
+name: Generate Platform Release Notes
 on:
   push:
     tags:
@@ -28,7 +28,7 @@ jobs:
           GH_TOKEN: ${{ secrets.READ_ALL_TOKEN }}
           ORG: "transpara"
           INSTALLER_REPO: "tinstaller-releases"
-          OUTPUT_FILE: "JOINT_RELEASE_NOTES.md"
+          OUTPUT_FILE: "PLATFORM_RELEASE_NOTES.md"
         run: |
           # Resolve the target tag from the trigger context
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
@@ -38,14 +38,18 @@ jobs:
           fi
 
           echo "::group::Generated Release Notes"
-          cat JOINT_RELEASE_NOTES.md
+          cat PLATFORM_RELEASE_NOTES.md
           echo "::endgroup::"
+
+          # Rename with version suffix for asset download clarity
+          cp PLATFORM_RELEASE_NOTES.md "PLATFORM_RELEASE_NOTES-${{ env.target_tag }}.md"
 
       - name: Update Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.target_tag }}
-          body_path: JOINT_RELEASE_NOTES.md
+          body_path: PLATFORM_RELEASE_NOTES.md
           append_body: true
+          files: PLATFORM_RELEASE_NOTES-${{ env.target_tag }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
