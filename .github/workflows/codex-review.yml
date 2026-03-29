@@ -1,70 +1,14 @@
+# Calls the org-wide reusable Codex PR review workflow.
+# To customize the review prompt for this repo, create .github/codex/prompts/review.md
+
 name: Codex PR Review
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
-  codex-review:
-    runs-on: ubuntu-latest
-    outputs:
-      review: ${{ steps.codex.outputs.final-message }}
-    steps:
-      - name: Checkout merge ref
-        uses: actions/checkout@v5
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          fetch-depth: 0
-
-      - name: Fetch base and head refs
-        run: git fetch --no-tags origin ${{ github.event.pull_request.base.ref }} +refs/pull/${{ github.event.pull_request.number }}/head
-
-      - name: Generate diff
-        id: diff
-        run: |
-          echo 'PR_DIFF<<ENDDIFF' >> "$GITHUB_ENV"
-          git diff origin/${{ github.event.pull_request.base.ref }}...FETCH_HEAD >> "$GITHUB_ENV"
-          echo 'ENDDIFF' >> "$GITHUB_ENV"
-
-      - name: Write prompt with diff
-        run: |
-          cat .github/codex/prompts/review.md > /tmp/codex-prompt.md
-          echo "" >> /tmp/codex-prompt.md
-          echo "## PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" >> /tmp/codex-prompt.md
-          echo "" >> /tmp/codex-prompt.md
-          echo '```diff' >> /tmp/codex-prompt.md
-          echo "$PR_DIFF" >> /tmp/codex-prompt.md
-          echo '```' >> /tmp/codex-prompt.md
-
-      - name: Run Codex review
-        id: codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: /tmp/codex-prompt.md
-          model: gpt-5.2-codex
-          sandbox: read-only
-          safety-strategy: drop-sudo
-
-  post-review:
-    runs-on: ubuntu-latest
-    needs: codex-review
-    if: needs.codex-review.outputs.review != ''
-    steps:
-      - name: Post Codex review comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: process.env.CODEX_REVIEW,
-            });
-        env:
-          CODEX_REVIEW: ${{ needs.codex-review.outputs.review }}
+  review:
+    uses: transpara-ai/.github/.github/workflows/reusable-codex-review.yml@main
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
