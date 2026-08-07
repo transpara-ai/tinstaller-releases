@@ -19,56 +19,103 @@ readonly ORG="${ORG:-transpara}"
 readonly INSTALLER_REPO="${INSTALLER_REPO:-tinstaller-releases}"
 readonly OUTPUT_FILE="${OUTPUT_FILE:-PLATFORM_RELEASE_NOTES.md}"
 
-# Component registry: yaml_path|display_name|github_repo|type|tag_prefix
-# type: transpara = full release notes, thirdparty = version table row
-# tag_prefix: for repos with non-standard tag naming (e.g. transpara-operator-)
-readonly COMPONENTS=(
-  # Transpara application images
-  "container_images.tsystem.version|tsystem|tsystem|transpara|"
-  "container_images.tsystemevent.version|tevent-processor|tsystem|transpara|"
-  "container_images.tauth.version|tauth|tauth|transpara|"
-  "container_images.tauth_scraper.version|tauth-scraper|tauth-scraper|transpara|"
-  "container_images.tstudio.version|tstudio|tstudio-py|transpara|"
-  "container_images.tgraph.version|tgraph|tgraph-api|transpara|"
-  "container_images.tgraph_controller.version|tgraph-controller|tgraph-api|transpara|"
-  "container_images.tcalc.version|tcalc|tcalc|transpara|"
-  "container_images.tview.version|tview|tview|transpara|"
-  "container_images.taigateway.version|tai-gateway|tai-gateway|transpara|"
-  "container_images.tsystem_watcher.version|tsystem-watcher|tsystem-watcher|transpara|"
-  "container_images.mcp_memgraph.version|mcp-memgraph|mcp-memgraph|transpara|"
-  "container_images.interfaces.tstore.version|tstore-interface|tstore-interface|transpara|"
-  # Transpara extractors
-  "container_images.extractors.odbc.version|extractor-odbc|extractor_odbc|transpara|"
-  "container_images.extractors.opcua.version|extractor-opcua|extractor-opcua|transpara|"
-  "container_images.extractors.telegraf.version|extractor-telegraf|extractor-telegraf|transpara|"
-  # Transpara operator (tag prefix: transpara-operator-X.Y.Z)
-  "operators.transpara.version|transpara-operator|deployment|transpara|transpara-operator-"
-  # Third-party container images
-  "container_images.emqx.version|EMQX|—|thirdparty|"
-  "container_images.timescale.version|TimescaleDB|—|thirdparty|"
-  "container_images.valkey.version|Valkey|—|thirdparty|"
-  "container_images.keycloak.version|Keycloak|—|thirdparty|"
-  # Third-party infrastructure
-  "k3s.version|K3s|—|thirdparty|"
-  "helm.version|Helm|—|thirdparty|"
-  "envoy_gateway.version|Envoy Gateway|—|thirdparty|"
-  # Third-party Helm charts
-  "charts.cert_manager.version|cert-manager (chart)|—|thirdparty|"
-  "charts.prometheus.version|Prometheus stack (chart)|—|thirdparty|"
-  "charts.grafana_cnpg.version|Grafana CNPG (chart)|—|thirdparty|"
-  "charts.longhorn.version|Longhorn (chart)|—|thirdparty|"
-  "charts.emqx_operator.version|EMQX operator (chart)|—|thirdparty|"
-  "charts.valkey.version|Valkey (chart)|—|thirdparty|"
-  "charts.memgraph_lab.version|Memgraph Lab (chart)|—|thirdparty|"
-  "charts.memgraph.version|Memgraph (chart)|—|thirdparty|"
-  "charts.cnpg_operator.version|CNPG operator (chart)|—|thirdparty|"
-  "charts.zfs_localpv.version|ZFS LocalPV (chart)|—|thirdparty|"
-  "charts.headlamp.version|Headlamp (chart)|—|thirdparty|"
-  "charts.kyverno.version|Kyverno (chart)|—|thirdparty|"
-  "charts.kyverno_policies.version|Kyverno Policies (chart)|—|thirdparty|"
-  # Tools
-  "tools.crane.version|crane|—|thirdparty|"
-)
+# COMPONENTS yaml_path field that identifies the installer's own entry.
+readonly TINSTALLER_KEY="tinstaller.version"
+
+# Component registry — loaded from components.yaml (single source of truth).
+# Format after loading: yaml_path.version|display_name|github_repo|type|tag_prefix
+COMPONENTS=()
+
+# Loads components from a components.yaml file into the COMPONENTS array.
+# Produces the same pipe-delimited format consumed by downstream functions.
+load_components() {
+  local file="$1"
+  COMPONENTS=()
+  local comp_types=("transpara" "thirdparty")
+  for comp_type in "${comp_types[@]}"; do
+    local count
+    count=$(yq e ".${comp_type} | length" "${file}")
+    for (( i=0; i<count; i++ )); do
+      local yaml_path display_name github_repo tag_prefix
+      yaml_path=$(yq e ".${comp_type}[$i].yaml_path" "${file}")
+      display_name=$(yq e ".${comp_type}[$i].display_name" "${file}")
+      github_repo=$(yq e ".${comp_type}[$i].github_repo // \"—\"" "${file}")
+      tag_prefix=$(yq e ".${comp_type}[$i].tag_prefix // \"\"" "${file}")
+      COMPONENTS+=("${yaml_path}.version|${display_name}|${github_repo}|${comp_type}|${tag_prefix}")
+    done
+  done
+}
+
+# Fallback component list for releases that pre-date the components.yaml asset.
+# Remove this function after all active releases include components.yaml.
+load_components_fallback() {
+  COMPONENTS=(
+    "container_images.tsystem.version|tsystem|tsystem-api|transpara|"
+    "container_images.tsystemevent.version|tevent-processor|tevent-processor|transpara|"
+    "container_images.tauth.version|tauth|tauth|transpara|"
+    "container_images.tauth_scraper.version|tauth-scraper|tauth-scraper|transpara|"
+    "container_images.tstudio.version|tstudio|tstudio|transpara|"
+    "container_images.tgraph.version|tgraph|tgraph-api|transpara|"
+    "container_images.tgraph_controller.version|tgraph-controller|tgraph-controller|transpara|"
+    "container_images.tcalc_api.version|tcalc-api|tcalc|transpara|"
+    "container_images.tcalc_scheduler.version|tcalc-scheduler|tcalc|transpara|"
+    "container_images.tcalc_worker.version|tcalc-worker|tcalc|transpara|"
+    "container_images.tcalc_event_scheduler.version|tcalc-event-scheduler|tcalc|transpara|"
+    "container_images.tview.version|tview|tview|transpara|"
+    "container_images.taigateway.version|tai-gateway|tai-gateway|transpara|"
+    "container_images.tsystem_watcher.version|tsystem-watcher|tsystem-watcher|transpara|"
+    "container_images.mcp_memgraph.version|mcp-memgraph|mcp-memgraph|transpara|"
+    "container_images.interfaces.tstore.version|tstore-interface|tstore-interface|transpara|"
+    "container_images.interfaces.odbc_api.version|odbc-interface-api|odbc-interface|transpara|"
+    "container_images.interfaces.odbc_worker.version|odbc-interface-worker|odbc-interface|transpara|"
+    "container_images.extractors.odbc.version|extractor-odbc|extractor-odbc|transpara|"
+    "container_images.extractors.opcua.version|extractor-opcua|extractor-opcua|transpara|"
+    "container_images.extractors.telegraf.version|extractor-telegraf|extractor-telegraf|transpara|"
+    "operators.transpara.version|transpara-operator|deployment|transpara|transpara-operator-"
+    "container_images.emqx.version|EMQX|—|thirdparty|"
+    "container_images.timescale.version|TimescaleDB|—|thirdparty|"
+    "container_images.valkey.version|Valkey|—|thirdparty|"
+    "container_images.keycloak.version|Keycloak|—|thirdparty|"
+    "k3s.version|K3s|—|thirdparty|"
+    "helm.version|Helm|—|thirdparty|"
+    "envoy_gateway.version|Envoy Gateway|—|thirdparty|"
+    "charts.cert_manager.version|cert-manager (chart)|—|thirdparty|"
+    "charts.prometheus.version|Prometheus stack (chart)|—|thirdparty|"
+    "charts.grafana_cnpg.version|Grafana CNPG (chart)|—|thirdparty|"
+    "charts.longhorn.version|Longhorn (chart)|—|thirdparty|"
+    "charts.emqx_operator.version|EMQX operator (chart)|—|thirdparty|"
+    "charts.valkey.version|Valkey (chart)|—|thirdparty|"
+    "charts.memgraph_lab.version|Memgraph Lab (chart)|—|thirdparty|"
+    "charts.memgraph.version|Memgraph (chart)|—|thirdparty|"
+    "charts.cnpg_operator.version|CNPG operator (chart)|—|thirdparty|"
+    "charts.zfs_localpv.version|ZFS LocalPV (chart)|—|thirdparty|"
+    "charts.headlamp.version|Headlamp (chart)|—|thirdparty|"
+    "charts.kyverno.version|Kyverno (chart)|—|thirdparty|"
+    "charts.kyverno_policies.version|Kyverno Policies (chart)|—|thirdparty|"
+    "tools.crane.version|crane|—|thirdparty|"
+  )
+}
+
+# Ensures the installer's own component is present and leads COMPONENTS, so the
+# tinstaller section heads every generated view regardless of whether (or where)
+# the components.yaml asset lists it. Older assets omit the self-entry, so it is
+# synthesized when missing. An unchanged version is still skipped by
+# version_changed, like any other component.
+# Globals: COMPONENTS (augmented/reordered in place), TINSTALLER_KEY
+ensure_tinstaller_first() {
+  local front=() rest=() entry
+  for entry in "${COMPONENTS[@]}"; do
+    if [[ "${entry%%|*}" == "${TINSTALLER_KEY}" ]]; then
+      front+=("${entry}")
+    else
+      rest+=("${entry}")
+    fi
+  done
+  if (( ${#front[@]} == 0 )); then
+    front=("${TINSTALLER_KEY}|tinstaller|tinstaller|transpara|")
+  fi
+  COMPONENTS=("${front[@]}" "${rest[@]}")
+}
 
 # ── Logging ────────────────────────────────────────────────────────────
 log()    { echo "[*] $*" >&2; }
@@ -112,15 +159,26 @@ normalize_headers() {
   sed -E 's/^#{1,5} /##### /'
 }
 
-# Formats a version transition line for display.
+# Formats an upstream release body for inclusion: flattens its headers, then rewrites
+# bare 40-char commit SHAs into short clickable links. The commits live in the
+# component's own repo, not this one, so a bare SHA would never autolink on the
+# release page.
+# Arguments: $1 = github repo (under ORG) the body came from
+format_notes_body() {
+  local repo="$1"
+  normalize_headers \
+    | sed -E "s@\(([0-9a-f]{7})([0-9a-f]{33})\)@([\1](https://github.com/${ORG}/${repo}/commit/\1\2))@g"
+}
+
+# Formats a compact version transition fragment for a component heading.
 format_version_line() {
   local prev="$1" curr="$2"
   if [[ -n "${prev}" ]] && [[ "${prev}" != "null" ]] && [[ "${prev}" != "${curr}" ]]; then
-    echo "Previous: \`${prev}\` | Current: \`${curr}\`"
+    echo "\`${prev}\` → \`${curr}\`"
   elif [[ -z "${prev}" ]] || [[ "${prev}" == "null" ]]; then
-    echo "Current: \`${curr}\` (new component)"
+    echo "\`${curr}\` (new)"
   else
-    echo "Current: \`${curr}\`"
+    echo "\`${curr}\`"
   fi
 }
 
@@ -151,9 +209,8 @@ fetch_notes_between() {
 
   # No previous version — show only new version notes
   if [[ -z "${old_ver}" ]] || [[ "${old_ver}" == "null" ]]; then
-    echo "#### ${new_tag}"
     gh_retry gh release view "${new_tag}" --repo "${ORG}/${repo}" \
-      --json body --jq '.body' | normalize_headers || true
+      --json body --jq '.body' | format_notes_body "${repo}" || true
     echo ""
     return
   fi
@@ -176,18 +233,21 @@ fetch_notes_between() {
       "[.[] | select(.publishedAt > \"${old_date}\")] | reverse | .[].tagName" 2>/dev/null)
   else
     # Can't resolve dates — show just new version notes
-    echo "#### ${new_tag}"
     gh_retry gh release view "${new_tag}" --repo "${ORG}/${repo}" \
-      --json body --jq '.body' | normalize_headers || true
+      --json body --jq '.body' | format_notes_body "${repo}" || true
     echo ""
     return
   fi
 
   if [[ -n "${tags}" ]]; then
+    # Keep the per-tag marker only when aggregating multiple versions; for a single
+    # version the component heading already names it.
+    local tag_count
+    tag_count=$(grep -c . <<< "${tags}")
     while IFS= read -r tag; do
-      echo "#### ${tag}"
+      (( tag_count > 1 )) && echo "#### ${tag}"
       gh_retry gh release view "${tag}" --repo "${ORG}/${repo}" \
-        --json body --jq '.body' | normalize_headers || true
+        --json body --jq '.body' | format_notes_body "${repo}" || true
       echo ""
     done <<< "${tags}"
   fi
@@ -195,64 +255,136 @@ fetch_notes_between() {
 
 # ── Output generators ──────────────────────────────────────────────────
 
-generate_tinstaller_section() {
-  local curr_yaml="$1" prev_yaml="$2" workdir="$3"
-
-  local curr_ver prev_ver
-  curr_ver=$(get_version "${curr_yaml}" "tinstaller.version")
-  prev_ver=""
-  [[ -n "${prev_yaml}" ]] && prev_ver=$(get_version "${prev_yaml}" "tinstaller.version")
-
-  echo "### tInstaller"
-  format_version_line "${prev_ver}" "${curr_ver}"
-  echo ""
-  # Save notes to temp file for security section scanning
-  fetch_notes_between "tinstaller" "${prev_ver}" "${curr_ver}" \
-    | tee "${workdir}/tinstaller_notes.md"
-  echo "---"
-  echo ""
-}
-
-generate_transpara_sections() {
-  local curr_yaml="$1" prev_yaml="$2" workdir="$3"
-
-  mkdir -p "${workdir}/notes"
-  local pids=()
-  local names=()
-
+# Echoes one "display|prev|curr|repo|tag_prefix" line per changed, repo-deduplicated
+# first-party (transpara) component, in COMPONENTS order. Centralizes the detection
+# shared by the summary table and the per-component sections.
+# Globals: COMPONENTS
+collect_changed_transpara() {
+  local curr_yaml="$1" prev_yaml="$2"
+  local -A seen
+  local entry yaml_path name repo comp_type tag_prefix curr_ver prev_ver
+  local display count check check_repo
   for entry in "${COMPONENTS[@]}"; do
     IFS='|' read -r yaml_path name repo comp_type tag_prefix <<< "${entry}"
     [[ "${comp_type}" != "transpara" ]] && continue
+    if [[ "${repo}" != "—" ]] && [[ -n "${seen[${repo}]+_}" ]]; then continue; fi
 
-    local curr_ver prev_ver
     curr_ver=$(get_version "${curr_yaml}" "${yaml_path}")
     prev_ver=""
     [[ -n "${prev_yaml}" ]] && prev_ver=$(get_version "${prev_yaml}" "${yaml_path}")
 
-    if ! version_changed "${prev_ver}" "${curr_ver}"; then continue; fi
+    if ! version_changed "${prev_ver}" "${curr_ver}"; then
+      [[ "${repo}" != "—" ]] && seen[${repo}]=1
+      continue
+    fi
 
-    names+=("${name}")
+    # Multi-image repos (e.g. tcalc) share one repo; show the repo name once.
+    display="${name}"
+    count=0
+    for check in "${COMPONENTS[@]}"; do
+      IFS='|' read -r _ _ check_repo _ _ <<< "${check}"
+      [[ "${check_repo}" == "${repo}" ]] && count=$((count + 1))
+    done
+    (( count > 1 )) && display="${repo}"
 
-    # Write header + version line to temp file, then fetch notes in background
-    {
-      echo "### ${name}"
-      format_version_line "${prev_ver}" "${curr_ver}"
-      echo ""
-      fetch_notes_between "${repo}" "${prev_ver}" "${curr_ver}" "${tag_prefix}"
-      echo "---"
-      echo ""
-    } > "${workdir}/notes/${name}.md" 2>"${workdir}/notes/${name}.err" &
-    pids+=($!)
+    [[ "${repo}" != "—" ]] && seen[${repo}]=1
+    echo "${display}|${prev_ver}|${curr_ver}|${repo}|${tag_prefix}"
+  done
+}
+
+# Emits a brief platform-level rollup at the top of the document: the installer
+# version transition and the first/third-party change counts. Pure templating of
+# already-computed state (no model, no extra network).
+# Arguments: $1 = changed-components file, $2 = curr versions.yaml,
+#            $3 = prev versions.yaml (may be empty), $4 = prev tag, $5 = target tag
+generate_release_summary() {
+  local changed_file="$1" curr_yaml="$2" prev_yaml="$3" prev_tag="$4" target_tag="$5"
+  local security_findings="$6"
+
+  local fp_count=0
+  [[ -s "${changed_file}" ]] && fp_count=$(grep -c . "${changed_file}")
+
+  local tp_count=0 entry yaml_path comp_type cur prev
+  for entry in "${COMPONENTS[@]}"; do
+    IFS='|' read -r yaml_path _ _ comp_type _ <<< "${entry}"
+    [[ "${comp_type}" != "thirdparty" ]] && continue
+    cur=$(get_version "${curr_yaml}" "${yaml_path}")
+    prev=""
+    [[ -n "${prev_yaml}" ]] && prev=$(get_version "${prev_yaml}" "${yaml_path}")
+    version_changed "${prev}" "${cur}" && tp_count=$((tp_count + 1))
   done
 
-  # Wait for all background fetches
+  echo "### Release Summary"
+  echo ""
+  if [[ -n "${prev_tag}" ]]; then
+    echo "- Platform installer: \`${prev_tag}\` → \`${target_tag}\`"
+  else
+    echo "- Platform installer: \`${target_tag}\` (initial release)"
+  fi
+  echo "- First-party components changed: ${fp_count}"
+  echo "- Third-party components changed: ${tp_count}"
+  if [[ -n "${security_findings}" ]]; then
+    echo "- Security keyword scan: matches detected (see Security-Relevant Changes below)"
+  else
+    echo "- Security keyword scan: no matches detected"
+  fi
+  echo ""
+}
+
+# Emits the top index table mapping each changed first-party component to its version
+# transition. Reads the lines produced by collect_changed_transpara.
+# Arguments: $1 = path to the changed-components file
+generate_summary_table() {
+  local changed_file="$1"
+  if [[ ! -s "${changed_file}" ]]; then
+    echo "_No first-party component changes in this release._"
+    echo ""
+    return
+  fi
+  echo "| Component | Previous | Current |"
+  echo "|-----------|----------|---------|"
+  local display prev_ver curr_ver repo tag_prefix prev_cell
+  while IFS='|' read -r display prev_ver curr_ver repo tag_prefix; do
+    [[ -z "${display}" ]] && continue
+    if [[ -n "${prev_ver}" ]] && [[ "${prev_ver}" != "null" ]]; then
+      prev_cell="\`${prev_ver}\`"
+    else
+      prev_cell="(new)"
+    fi
+    echo "| ${display} | ${prev_cell} | \`${curr_ver}\` |"
+  done < "${changed_file}"
+  echo ""
+}
+
+# Emits one section per changed first-party component: a single self-describing H3
+# (name + version transition) followed by the verbatim upstream notes. Fetches run in
+# parallel; sections are assembled in the order of the changed-components file.
+# Arguments: $1 = workdir, $2 = path to the changed-components file
+generate_transpara_sections() {
+  local workdir="$1" changed_file="$2"
+
+  mkdir -p "${workdir}/notes"
+  local pids=() names=()
+  local display prev_ver curr_ver repo tag_prefix
+
+  while IFS='|' read -r display prev_ver curr_ver repo tag_prefix; do
+    [[ -z "${display}" ]] && continue
+    names+=("${display}")
+    {
+      echo "### ${display}: $(format_version_line "${prev_ver}" "${curr_ver}")"
+      echo ""
+      fetch_notes_between "${repo}" "${prev_ver}" "${curr_ver}" "${tag_prefix}"
+    } > "${workdir}/notes/${display}.md" 2>"${workdir}/notes/${display}.err" &
+    pids+=($!)
+  done < "${changed_file}"
+
   for pid in "${pids[@]}"; do
     wait "${pid}" 2>/dev/null || true
   done
 
-  # Report errors
+  local name err_file notes_file
   for name in "${names[@]}"; do
-    local err_file="${workdir}/notes/${name}.err"
+    err_file="${workdir}/notes/${name}.err"
     if [[ -s "${err_file}" ]]; then
       warn "Error fetching notes for ${name}: $(cat "${err_file}")"
     fi
@@ -260,62 +392,41 @@ generate_transpara_sections() {
 
   # Assemble in original order
   for name in "${names[@]}"; do
-    local notes_file="${workdir}/notes/${name}.md"
-    if [[ -f "${notes_file}" ]]; then
-      cat "${notes_file}"
-    fi
+    notes_file="${workdir}/notes/${name}.md"
+    [[ -f "${notes_file}" ]] && cat "${notes_file}"
   done
 }
 
-# Scans fetched release notes for security-related changes.
-# Extracts matching lines from temp files already populated by generate_transpara_sections.
-generate_security_section() {
-  local workdir="$1"
-  local notes_dir="${workdir}/notes"
-
-  # Security keywords pattern (case-insensitive grep)
+# Scans fetched component notes for security keywords. Echoes the findings block
+# (matching lines grouped by component), or nothing when there are no matches.
+# Arguments: $1 = workdir (with a notes/ subdirectory populated by the fetch step)
+scan_security() {
+  local notes_dir="$1/notes"
   local pattern="CVE-|GHSA-|security|vulnerab|auth.*fix|XSS|CSRF|injection|privilege.escalat|access.control"
-
-  local findings=""
-
-  # Scan tinstaller notes if present
-  if [[ -f "${workdir}/tinstaller_notes.md" ]]; then
-    local matches
-    matches=$(grep -iE "${pattern}" "${workdir}/tinstaller_notes.md" 2>/dev/null || true)
+  local findings="" notes_file comp_name matches
+  [[ -d "${notes_dir}" ]] || return
+  for notes_file in "${notes_dir}"/*.md; do
+    [[ -f "${notes_file}" ]] || continue
+    comp_name=$(basename "${notes_file}" .md)
+    matches=$(grep -iE "${pattern}" "${notes_file}" 2>/dev/null || true)
     if [[ -n "${matches}" ]]; then
-      findings+="**tInstaller**"$'\n'
-      findings+="${matches}"$'\n\n'
+      findings+="**${comp_name}**"$'\n'"${matches}"$'\n\n'
     fi
-  fi
+  done
+  printf '%s' "${findings}"
+}
 
-  # Scan each component's notes
-  if [[ -d "${notes_dir}" ]]; then
-    for notes_file in "${notes_dir}"/*.md; do
-      [[ -f "${notes_file}" ]] || continue
-      local comp_name
-      comp_name=$(basename "${notes_file}" .md)
-      local matches
-      matches=$(grep -iE "${pattern}" "${notes_file}" 2>/dev/null || true)
-      if [[ -n "${matches}" ]]; then
-        findings+="**${comp_name}**"$'\n'
-        findings+="${matches}"$'\n\n'
-      fi
-    done
-  fi
-
+# Renders the security section from precomputed findings. Emits nothing when empty;
+# the all-clear state is reported in the Release Summary instead.
+# Arguments: $1 = findings block from scan_security
+render_security() {
+  local findings="$1"
+  [[ -z "${findings}" ]] && return
   echo "### Security-Relevant Changes"
   echo ""
-  if [[ -n "${findings}" ]]; then
-    echo "> The following changes were identified by keyword matching (CVE, security, vulnerability, auth fix, etc.)."
-    echo "> This is not a vulnerability assessment — review each item for applicability."
-    echo ""
-    echo "${findings}"
-  else
-    echo "No security-relevant changes detected in this release."
-    echo ""
-  fi
-  echo "---"
+  echo "> Identified by keyword matching (CVE, security, vulnerability, auth fix, etc.); not a vulnerability assessment, review each item for applicability."
   echo ""
+  echo "${findings}"
 }
 
 generate_thirdparty_table() {
@@ -340,17 +451,13 @@ generate_thirdparty_table() {
     fi
   done
 
+  # Render only when something changed; the all-clear is reported in the Release Summary.
+  [[ -z "${rows}" ]] && return
   echo "### Infrastructure & Third-Party"
   echo ""
-  if [[ -n "${rows}" ]]; then
-    echo "| Component | Previous | Current |"
-    echo "|-----------|----------|---------|"
-    echo -n "${rows}"
-  else
-    echo "No third-party version changes in this release."
-  fi
-  echo ""
-  echo "---"
+  echo "| Component | Previous | Current |"
+  echo "|-----------|----------|---------|"
+  echo -n "${rows}"
   echo ""
 }
 
@@ -361,11 +468,15 @@ generate_version_status() {
   echo ""
 
   # Check tinstaller + all transpara components for "behind latest"
-  # Include tag_prefix so we can strip it when comparing versions
-  local check_entries=("tinstaller.version|tinstaller|tinstaller|")
+  # Include tag_prefix so we can strip it when comparing versions.
+  # tinstaller arrives via COMPONENTS (ensured first), like any other component.
+  local check_entries=()
+  local -A seen_repos_status
   for entry in "${COMPONENTS[@]}"; do
     IFS='|' read -r yaml_path name repo comp_type tag_prefix <<< "${entry}"
     [[ "${comp_type}" != "transpara" ]] && continue
+    if [[ "${repo}" != "—" ]] && [[ -n "${seen_repos_status[${repo}]+_}" ]]; then continue; fi
+    [[ "${repo}" != "—" ]] && seen_repos_status[${repo}]=1
     check_entries+=("${yaml_path}|${name}|${repo}|${tag_prefix}")
   done
 
@@ -404,9 +515,7 @@ generate_version_status() {
   done
 
   if [[ -n "${behind}" ]]; then
-    echo "Components where the bundled version differs from the latest available release."
-    echo "Versions may be intentionally pinned for stability or compatibility."
-    echo "See [\`versions.yaml\`](https://github.com/${ORG}/${INSTALLER_REPO}/releases/tag/${target_tag}) attached to this release for the full manifest."
+    echo "Bundled versions differing from latest (may be intentionally pinned). Full manifest: [versions.yaml](https://github.com/${ORG}/${INSTALLER_REPO}/releases/tag/${target_tag})."
     echo ""
     echo "| Component | Bundled | Latest Available |"
     echo "|-----------|---------|------------------|"
@@ -414,6 +523,68 @@ generate_version_status() {
   else
     echo "All bundled component versions match their latest available releases."
   fi
+  echo ""
+}
+
+# Emits the compatibility ranges (from compatibility.yaml) and links to the release
+# manifests. Only links assets that actually exist in this release; renders nothing
+# when neither a compatibility table nor any manifest is available.
+# Arguments: $1 = compatibility.yaml path (may be empty), $2 = assets list file,
+#            $3 = target tag
+generate_compatibility_section() {
+  local compat_yaml="$1" assets_file="$2" target_tag="$3"
+  local base="https://github.com/${ORG}/${INSTALLER_REPO}/releases/download/${target_tag}"
+
+  # Link only the manifests that are actually attached to this release.
+  local links="" name
+  for name in compatibility.yaml versions.yaml components.yaml; do
+    grep -qx "${name}" "${assets_file}" 2>/dev/null && links+="[${name}](${base}/${name}) · "
+  done
+
+  local have_table="false"
+  [[ -n "${compat_yaml}" && -f "${compat_yaml}" ]] && have_table="true"
+  [[ "${have_table}" == "false" && -z "${links}" ]] && return
+
+  echo "### Compatibility"
+  echo ""
+
+  if [[ "${have_table}" == "true" ]]; then
+    echo "Tested ranges for core infrastructure components:"
+    echo ""
+    echo "| Component | Minimum | Max minor |"
+    echo "|-----------|---------|-----------|"
+    local key min max
+    while IFS= read -r key; do
+      [[ -z "${key}" ]] && continue
+      min=$(yq e ".[\"${key}\"].min // \"—\"" "${compat_yaml}" | tr -d '"')
+      max=$(yq e ".[\"${key}\"].max_minor // \"—\"" "${compat_yaml}" | tr -d '"')
+      echo "| ${key} | \`${min}\` | \`${max}\` |"
+    done < <(yq e 'keys | .[]' "${compat_yaml}")
+    echo ""
+  fi
+
+  [[ -n "${links}" ]] && { echo "Manifests: ${links% · }"; echo ""; }
+}
+
+# Lists the CycloneDX SBOM assets for the release as links. Self-adjusting: filters the
+# live asset inventory by the .sbom.cdx.json suffix, so new SBOMs appear automatically.
+# Arguments: $1 = assets list file, $2 = target tag
+generate_sbom_section() {
+  local assets_file="$1" target_tag="$2"
+  local base="https://github.com/${ORG}/${INSTALLER_REPO}/releases/download/${target_tag}"
+
+  local sboms
+  sboms=$(grep '\.sbom\.cdx\.json$' "${assets_file}" 2>/dev/null || true)
+  [[ -z "${sboms}" ]] && return
+
+  echo "### Software Bill of Materials"
+  echo ""
+  echo "CycloneDX SBOMs attached to this release:"
+  local name
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] && continue
+    echo "* [${name}](${base}/${name})"
+  done <<< "${sboms}"
   echo ""
 }
 
@@ -464,22 +635,85 @@ main() {
     fi
   fi
 
-  # Generate the release notes document
+  # Load component registry from components.yaml (single source of truth)
+  log "Downloading components.yaml for ${target_tag} ..."
+  if gh release download "${target_tag}" --repo "${ORG}/${INSTALLER_REPO}" \
+      --pattern "components.yaml" --dir "${workdir}/current" 2>/dev/null; then
+    load_components "${workdir}/current/components.yaml"
+    log "Loaded ${#COMPONENTS[@]} components from components.yaml"
+  else
+    warn "components.yaml not found in release ${target_tag} — using built-in fallback"
+    load_components_fallback
+  fi
+
+  # Release asset inventory, used for manifest/SBOM links and the compatibility table.
+  local assets_file="${workdir}/assets.txt"
+  gh_retry gh release view "${target_tag}" --repo "${ORG}/${INSTALLER_REPO}" \
+    --json assets --jq '.assets[].name' > "${assets_file}" 2>/dev/null || true
+  local compat_yaml=""
+  if grep -qx "compatibility.yaml" "${assets_file}" 2>/dev/null \
+      && gh release download "${target_tag}" --repo "${ORG}/${INSTALLER_REPO}" \
+        --pattern "compatibility.yaml" --dir "${workdir}/current" 2>/dev/null; then
+    compat_yaml="${workdir}/current/compatibility.yaml"
+  fi
+
+  # Ensure tinstaller is present and leads, regardless of the asset's contents.
+  ensure_tinstaller_first
+
+  # Detect changed first-party components once; reused by the summary table and the
+  # per-component sections so detection is not duplicated.
+  local changed_file="${workdir}/changed.tsv"
+  collect_changed_transpara "${curr_yaml}" "${prev_yaml}" > "${changed_file}"
+
+  # Use the target tag's actual publish date, not the script's run date (which drifts
+  # on re-runs and local runs). Fall back to today (UTC) only if the release is not
+  # yet published. Not createdAt: that is the shared commit date across tags.
+  local release_date
+  release_date=$(gh_retry gh release view "${target_tag}" --repo "${ORG}/${INSTALLER_REPO}" \
+    --json publishedAt --jq '.publishedAt')
+  release_date="${release_date%%T*}"
+  [[ -z "${release_date}" || "${release_date}" == "null" ]] && release_date=$(date -u +%Y-%m-%d)
+
+  # Fetch component notes first (this populates ${workdir}/notes and captures the
+  # rendered sections); the Release Summary's security state needs the notes scanned
+  # up front, before anything is emitted.
+  local sections_md="${workdir}/sections.md"
+  : > "${sections_md}"
+  [[ -s "${changed_file}" ]] \
+    && generate_transpara_sections "${workdir}" "${changed_file}" > "${sections_md}"
+  local security_findings
+  security_findings=$(scan_security "${workdir}")
+
+  # Generate the release notes document. cat -s collapses any incidental double
+  # blank lines so the page stays dense.
   log "Generating release notes → ${OUTPUT_FILE}"
 
   {
-    echo "## Transpara Platform Release Notes"
-    echo "Consolidated release notes for all platform components."
+    echo "## Transpara Platform ${target_tag} Release Notes"
     echo ""
-    echo "Released: $(date +%Y-%m-%d) | Previous: \`${prev_tag:-initial}\` | Current: \`${target_tag}\`"
+    echo "Released: ${release_date} | Previous: \`${prev_tag:-initial}\` | Current: \`${target_tag}\`"
     echo ""
 
-    generate_tinstaller_section "${curr_yaml}" "${prev_yaml}" "${workdir}"
-    generate_transpara_sections "${curr_yaml}" "${prev_yaml}" "${workdir}"
-    generate_security_section "${workdir}"
+    generate_release_summary "${changed_file}" "${curr_yaml}" "${prev_yaml}" \
+      "${prev_tag}" "${target_tag}" "${security_findings}"
+    generate_summary_table "${changed_file}"
+
+    if [[ -s "${sections_md}" ]]; then
+      echo "---"
+      echo ""
+      cat "${sections_md}"
+    fi
+
+    # Detail sections appear only when they carry content; the all-clear states are
+    # reported in the Release Summary above.
+    echo "---"
+    echo ""
+    render_security "${security_findings}"
     generate_thirdparty_table "${curr_yaml}" "${prev_yaml}"
     generate_version_status "${curr_yaml}" "${workdir}" "${target_tag}"
-  } > "${OUTPUT_FILE}"
+    generate_compatibility_section "${compat_yaml}" "${assets_file}" "${target_tag}"
+    generate_sbom_section "${assets_file}" "${target_tag}"
+  } | cat -s > "${OUTPUT_FILE}"
 
   # Expose target tag for CI
   if [[ "${IS_CI}" == "true" ]] && [[ -n "${GITHUB_ENV:-}" ]]; then
