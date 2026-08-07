@@ -1,0 +1,22 @@
+name: TLC 4.5
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  tlc-4-5:
+    uses: transpara-ai/.github/.github/workflows/tlc-4.5-reusable.yml@d1545dd154728e22edb21396c52ce5282870ab2d
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      enforcement_mode: audit
+      workflow_commit: d1545dd154728e22edb21396c52ce5282870ab2d
+      activation_commit: 0057171a729566fd5d42a8147e8258d0928eb593
