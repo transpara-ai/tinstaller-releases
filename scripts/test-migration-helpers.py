@@ -28,7 +28,16 @@ with (root / "calls.jsonl").open("a") as log:
 mode = os.environ["STUB_MODE"]
 
 if "get" in args and "jobs" in args:
-    print(json.dumps({"items": [{"status": {"active": 1}}] if mode == "active" else []}))
+    # A retry gap has zero active Pods but is still eligible to run again.
+    prior = {
+        "active": {"active": 1},
+        "retry_wait": {"active": 0, "failed": 1},
+        "unstarted": {},
+        "prior_complete": {"succeeded": 1, "conditions": [
+            {"type": "Complete", "status": "True"},
+        ]},
+    }
+    print(json.dumps({"items": [{"status": prior[mode]}] if mode in prior else []}))
 elif "get" in args and "deploy" in args:
     if args[-1] == "json":
         print(json.dumps({"spec": {"template": {"spec": {
@@ -40,7 +49,7 @@ elif "get" in args and "deploy" in args:
 elif "get" in args and "job" in args:
     if mode == "unobservable":
         raise SystemExit("simulated Kubernetes read failure")
-    status = {"succeeded": 1} if mode == "success" else (
+    status = {"succeeded": 1} if mode in ("success", "prior_complete") else (
         {"failed": 1} if mode == "failed" else {})
     print(json.dumps({"status": status}))
 elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg in args)):
@@ -117,15 +126,26 @@ class MigrationHelperSafetyTests(unittest.TestCase):
 
     def test_active_upgrade_blocks_full_and_module_replay(self):
         for helper in HELPERS:
-            for prefix in ((), ("--only", "enable_tcache_auth")):
-                with self.subTest(helper=helper, prefix=prefix):
-                    result, _, job, patch = run_helper(
-                        helper, "active", *prefix, "0.272.0", "0.274.0"
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("still running", result.stderr)
-                    self.assertIsNone(job)
-                    self.assertIsNone(patch)
+            for mode in ("active", "retry_wait", "unstarted"):
+                for prefix in ((), ("--only", "enable_tcache_auth")):
+                    with self.subTest(helper=helper, mode=mode, prefix=prefix):
+                        result, _, job, patch = run_helper(
+                            helper, mode, *prefix, "0.272.0", "0.274.0"
+                        )
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("unfinished", result.stderr)
+                        self.assertIsNone(job)
+                        self.assertIsNone(patch)
+
+    def test_terminal_prior_job_allows_replay(self):
+        for helper in HELPERS:
+            with self.subTest(helper=helper):
+                result, _, job, patch = run_helper(
+                    helper, "prior_complete", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNotNone(job)
+                self.assertIsNotNone(patch)
 
     def test_success_uses_data_arguments_and_only_full_run_advances_state(self):
         for helper in HELPERS:

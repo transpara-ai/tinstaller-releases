@@ -53,11 +53,13 @@ JOB=migrations-replay-$(date +%s)-$$
 if ver_lt "${TO%%-*}" 0.274.0; then
   echo "ERROR: installed version is $TO; nothing to replay (needs >= 0.274.0). Is an upgrade still running?" >&2; exit 1
 fi
+# A Job can be nonterminal with zero active Pods before creation or between
+# retries. Block until Kubernetes records a Complete or Failed condition.
 # Full and module-scoped replays must not race an upgrade or another replay.
 JOBS=$(kubectl -n "$NS" get jobs -l 'app in (tsystem-upgrade,migrations-replay)' -o json)
-ACTIVE=$(jq -r 'any(.items[]?; (.status.active // 0) > 0)' <<< "$JOBS")
-if [ "$ACTIVE" = true ]; then
-  echo "ERROR: an upgrade or replay Job is still running in $NS; wait for it to finish." >&2; exit 1
+NONTERMINAL=$(jq -r 'if (.items | type) != "array" then true else any(.items[]; ([.status.conditions[]? | select((.type == "Complete" or .type == "Failed") and .status == "True")] | length) == 0) end' <<< "$JOBS")
+if [ "$NONTERMINAL" = true ]; then
+  echo "ERROR: an upgrade or replay Job is unfinished in $NS; wait for a terminal Job condition." >&2; exit 1
 fi
 echo "FROM=$FROM TO=$TO DRY_RUN=$DRY ONLY=${ONLY:-<all>}"
 echo "runner image:     $API_IMG"

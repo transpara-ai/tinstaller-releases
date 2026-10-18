@@ -48,8 +48,9 @@ replays matching migration modules and does not advance `MIGRATIONS_APPLIED_THRO
 
 `fix-skipped-migrations.sh` remains available as a standalone compatibility
 entry point; prefer `migration.sh` for new use. Both scripts reject malformed
-versions and module selectors, stop if an upgrade or another replay Job is
-active, and create the replay Job in the selected namespace. A failed Job leaves
+versions and module selectors, stop if an upgrade or another replay Job lacks
+a terminal Complete or Failed condition (including gaps between Pod retries),
+and create the replay Job in the selected namespace. A failed Job leaves
 the migration state unchanged. On timeout or lost Job status, the script attempts
 foreground deletion and reports if it cannot confirm it. A full replay advances
 `MIGRATIONS_APPLIED_THROUGH` only after the Job reports success. Stubbed tests
