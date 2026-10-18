@@ -28,8 +28,9 @@ curl -sfL https://github.com/transpara/tinstaller-releases/releases/latest/downl
 
 # Repair: migrations skipped by a direct upgrade from < 0.274.0
 
-The upstream repair helpers replay cluster migrations that a direct upgrade from
-before 0.274.0 may skip. Inspect the script and confirm the original and target
+These repair helpers replay cluster migrations that a direct upgrade from
+before 0.274.0 may skip (for example, `secret "tcache-auth" not found`).
+Inspect the script and confirm the original and target
 versions before running it on an authorized control-plane node. The default
 original version is 0.272.0; pass a different version when needed.
 
@@ -43,8 +44,20 @@ creates a Kubernetes Job using the API deployment's service account, images,
 environment and volumes to list pending migrations. The Job can run for up to
 20 minutes and has a 24-hour cleanup TTL. Running either command changes the
 cluster and requires separate operational authorization. `--only <module-substr>`
-limits a replay and does not advance `MIGRATIONS_APPLIED_THROUGH`.
+replays matching migration modules and does not advance `MIGRATIONS_APPLIED_THROUGH`.
 
-`fix-skipped-migrations.sh` remains available for compatibility. Prefer
-`migration.sh`, which guards against an active upgrade Job before a full replay
-and explicitly sets the replay Job namespace.
+`fix-skipped-migrations.sh` remains available as a standalone compatibility
+entry point; prefer `migration.sh` for new use. Both scripts reject malformed
+versions and module selectors, stop if an upgrade or another replay Job is
+active, and create the replay Job in the selected namespace. A failed Job leaves
+the migration state unchanged. On timeout or lost Job status, the script attempts
+foreground deletion and reports if it cannot confirm it. A full replay advances
+`MIGRATIONS_APPLIED_THROUGH` only after the Job reports success. Stubbed tests
+cover these control paths; they do not qualify the API image, migration code,
+credentials or a live cluster.
+
+```bash
+bash -n migration.sh fix-skipped-migrations.sh
+shellcheck -s bash migration.sh fix-skipped-migrations.sh
+python scripts/test-migration-helpers.py
+```
