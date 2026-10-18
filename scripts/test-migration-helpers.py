@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -20,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 root = Path(os.environ["STUB_ROOT"])
 args = sys.argv[1:]
@@ -49,7 +51,7 @@ elif "get" in args and "deploy" in args:
 elif "get" in args and "job" in args:
     if mode == "unobservable":
         raise SystemExit("simulated Kubernetes read failure")
-    status = {"succeeded": 1} if mode in ("success", "prior_complete") else (
+    status = {"succeeded": 1} if mode in ("success", "prior_complete", "lock_hold") else (
         {"failed": 1} if mode == "failed" else {})
     print(json.dumps({"status": status}))
 elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg in args)):
@@ -64,6 +66,16 @@ elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg
             }}))
     else:
         print("0.274.0")
+elif "create" in args and "configmap" in args:
+    # O_EXCL models the API server's atomic create of a named lock object.
+    try:
+        fd = os.open(root / "replay.lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise SystemExit("replay lock already exists")
+    with os.fdopen(fd, "w") as lock:
+        lock.write(next((arg.split("=", 1)[1] for arg in args if arg.startswith("--from-literal=holder=")), ""))
+    if mode == "lock_hold":
+        time.sleep(0.5)
 elif "apply" in args:
     (root / "job.json").write_text(sys.stdin.read())
 elif "patch" in args:
@@ -71,6 +83,8 @@ elif "patch" in args:
 elif "logs" in args:
     print("stub Job log")
 elif "delete" in args:
+    if "configmap" in args:
+        (root / "replay.lock").unlink()
     print("job deleted")
 else:
     raise SystemExit("unexpected kubectl call: " + repr(args))
@@ -147,6 +161,37 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 self.assertIsNotNone(job)
                 self.assertIsNotNone(patch)
 
+    def test_atomic_lock_blocks_simultaneous_entry_points(self):
+        # The first command holds the lock while its stub waits. The second
+        # command uses the compatibility entry point against the same namespace.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            kubectl = root / "kubectl"
+            kubectl.write_text(KUBECTL_STUB)
+            kubectl.chmod(0o755)
+            environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                               STUB_ROOT=str(root), STUB_MODE="lock_hold", NS="transpara")
+            first = subprocess.Popen(
+                ["bash", str(ROOT / HELPERS[0]), "0.272.0", "0.274.0"],
+                env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not (root / "replay.lock").exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue((root / "replay.lock").exists(), "first helper never acquired lock")
+                second = subprocess.run(
+                    ["bash", str(ROOT / HELPERS[1]), "0.272.0", "0.274.0"],
+                    env=environment, text=True, capture_output=True, timeout=5,
+                )
+                self.assertNotEqual(second.returncode, 0)
+                self.assertIn("replay lock", second.stderr)
+                self.assertNotIn("waiting for job/", second.stdout)
+            finally:
+                stdout, stderr = first.communicate(timeout=5)
+            self.assertEqual(first.returncode, 0, stderr + stdout)
+            self.assertFalse((root / "replay.lock").exists())
+
     def test_success_uses_data_arguments_and_only_full_run_advances_state(self):
         for helper in HELPERS:
             with self.subTest(helper=helper):
@@ -177,7 +222,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIsNotNone(job)
                     self.assertIsNone(patch)
-                    deletes = [call for call in calls if "delete" in call]
+                    deletes = [call for call in calls if "delete" in call and "job" in call]
                     self.assertEqual(bool(deletes), mode != "failed")
                     for call in deletes:
                         self.assertIn("--cascade=foreground", call)

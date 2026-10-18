@@ -63,6 +63,21 @@ NONTERMINAL=$(jq -r 'if (.items | type) != "array" then true else any(.items[]; 
 if [ "$NONTERMINAL" = true ]; then
   echo "ERROR: an upgrade or replay Job is unfinished in $NS; wait for a terminal Job condition." >&2; exit 1
 fi
+# Kubernetes creates a named ConfigMap atomically. A second replay cannot pass
+# this guard while the first owns it, even if both saw an empty Job list above.
+# Do not remove an uncertain lock automatically: an interrupted Job could still
+# be running. The README gives the inspection procedure for stale locks.
+LOCK=tinstaller-migrations-replay-lock
+if ! kubectl -n "$NS" create configmap "$LOCK" --from-literal="holder=$JOB" --from-literal="target=$TO"; then
+  echo "ERROR: replay lock $LOCK exists or could not be created in $NS; inspect it before retry." >&2
+  exit 1
+fi
+release_lock() {
+  if ! kubectl -n "$NS" delete configmap "$LOCK" --wait=true; then
+    echo "ERROR: could not release replay lock $LOCK in $NS; inspect it before retry." >&2
+    return 1
+  fi
+}
 echo "FROM=$FROM TO=$TO DRY_RUN=$DRY ONLY=${ONLY:-<all>}"
 echo "runner image:     $API_IMG"
 echo "migrations image: $MIG_IMG"
@@ -120,6 +135,7 @@ echo "waiting for job/$JOB ..."
 stop_replay_job() {
   if ! kubectl -n "$NS" delete job "$JOB" --cascade=foreground --wait=true --timeout=60s; then
     echo "ERROR: could not confirm deletion of job/$JOB in $NS; inspect it before retry." >&2
+    return 1
   fi
 }
 RESULT=""
@@ -129,7 +145,7 @@ for i in $(seq 1 240); do
   if ! OBSERVED=$(kubectl -n "$NS" get job "$JOB" -o json |
     jq -r '[.status.succeeded // 0, .status.failed // 0] | @tsv'); then
     echo "ERROR: lost job/$JOB status in $NS." >&2
-    stop_replay_job
+    stop_replay_job && release_lock
     exit 1
   fi
   read -r SUCCEEDED FAILED <<< "$OBSERVED"
@@ -142,9 +158,11 @@ kubectl -n "$NS" logs "job/$JOB" -c migrate --tail=-1 ||
 echo "Job result: succeeded=$SUCCEEDED failed=$FAILED"
 case "$RESULT" in
   success) ;;
-  failed) echo "ERROR: migration replay Job failed; state was not advanced." >&2; exit 1;;
+  failed) echo "ERROR: migration replay Job failed; state was not advanced." >&2
+          release_lock
+          exit 1;;
   *) echo "ERROR: migration replay Job timed out; stopping it." >&2
-     stop_replay_job
+     stop_replay_job && release_lock
      exit 1;;
 esac
 if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
@@ -152,3 +170,4 @@ if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
   kubectl -n "$NS" patch cm tinstaller-state --type merge -p "$PATCH"
   echo "tinstaller-state MIGRATIONS_APPLIED_THROUGH=$TO"
 fi
+release_lock

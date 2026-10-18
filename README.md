@@ -50,12 +50,24 @@ replays matching migration modules and does not advance `MIGRATIONS_APPLIED_THRO
 entry point; prefer `migration.sh` for new use. Both scripts reject malformed
 versions and module selectors, stop if an upgrade or another replay Job lacks
 a terminal Complete or Failed condition (including gaps between Pod retries),
-and create the replay Job in the selected namespace. A failed Job leaves
-the migration state unchanged. On timeout or lost Job status, the script attempts
-foreground deletion and reports if it cannot confirm it. A full replay advances
-`MIGRATIONS_APPLIED_THROUGH` only after the Job reports success. Stubbed tests
+and create an atomic `tinstaller-migrations-replay-lock` ConfigMap before
+starting a replay Job. The lock prevents two helper invocations from starting
+concurrent Jobs; the caller needs permission to create and delete ConfigMaps.
+This adds one create and one delete API request per completed replay. A failed
+Job leaves the migration state unchanged. On timeout or lost Job status, the
+script attempts foreground deletion and reports if it cannot confirm it. A
+full replay advances `MIGRATIONS_APPLIED_THROUGH` only after the Job reports
+success. Stubbed tests
 cover these control paths; they do not qualify the API image, migration code,
 credentials or a live cluster.
+
+If a process is interrupted or cannot confirm Job deletion, its lock remains.
+Before clearing it, inspect `kubectl -n transpara get cm tinstaller-migrations-replay-lock -o yaml`
+for the holder Job name and target, check that Job's terminal condition (or
+confirm its deletion), and confirm no helper process is still running. Only then
+delete the lock ConfigMap and retry. The Job-list check still protects against
+an upgrade that was already underway; upgrades started after that check require
+operational coordination.
 
 ```bash
 bash -n migration.sh fix-skipped-migrations.sh
