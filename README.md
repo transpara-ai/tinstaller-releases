@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.0
+version: 0.1.1
 created: 2025-08-13
 updated: 2026-10-18
 owner: Transpara AI
@@ -76,8 +76,11 @@ concurrent Jobs. The operator running either helper needs namespace access to:
   foreground deletion or lock cleanup completes; and
 - get/list Pods and get Pod logs for `kubectl logs job/<name>`.
 
-The replay Job runs under the API Deployment's service account and needs its
-own migration permissions. The helper does not grant either identity access.
+The replay Job uses the API Deployment's service-account identity and needs its
+own migration permissions. A named account is copied exactly. If the Deployment
+omits `serviceAccountName`, the Job omits it too and Kubernetes selects the
+namespace's `default` account; the helper never substitutes a more privileged
+account. The helper does not grant either identity access.
 This adds one create and one delete API request per completed replay. A failed
 Job leaves the migration state unchanged. On timeout or lost Job status, the
 script attempts foreground deletion and reports if it cannot confirm it. A
@@ -110,3 +113,4 @@ python scripts/test-migration-helpers.py
 | Version | Date | Change |
 | --- | --- | --- |
 | 0.1.0 | 2026-10-18 | First versioned edition; document migration replay safety, permissions and checks. |
+| 0.1.1 | 2026-10-18 | Explain exact service-account inheritance and default-account behavior. |

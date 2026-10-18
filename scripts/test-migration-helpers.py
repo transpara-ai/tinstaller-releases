@@ -42,16 +42,16 @@ if "get" in args and "jobs" in args:
     print(json.dumps({"items": [{"status": prior[mode]}] if mode in prior else []}))
 elif "get" in args and "deploy" in args:
     if args[-1] == "json":
-        print(json.dumps({"spec": {"template": {"spec": {
-            "serviceAccountName": "tsystem-api",
-            "containers": [{"image": "registry.example/transpara/tsystem-api:1.0"}],
-        }}}}))
+        spec = {"containers": [{"image": "registry.example/transpara/tsystem-api:1.0"}]}
+        if mode != "success_default_sa":
+            spec["serviceAccountName"] = "tsystem-api"
+        print(json.dumps({"spec": {"template": {"spec": spec}}}))
     else:
         print("registry.example/transpara/tsystem-api:1.0")
 elif "get" in args and "job" in args:
     if mode == "unobservable":
         raise SystemExit("simulated Kubernetes read failure")
-    status = {"succeeded": 1} if mode in ("success", "prior_complete", "lock_hold", "patch_unknown") else (
+    status = {"succeeded": 1} if mode in ("success", "success_default_sa", "prior_complete", "lock_hold", "patch_unknown") else (
         {"failed": 1} if mode == "failed" else {})
     print(json.dumps({"status": status}))
 elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg in args)):
@@ -226,6 +226,21 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     self.assertEqual(limited.returncode, 0, limited.stderr)
                     self.assertIsNone(limited_patch)
                     self.assertFalse(limited_locked)
+
+    def test_replay_uses_the_deployments_actual_service_account(self):
+        for helper in HELPERS:
+            with self.subTest(helper=helper):
+                explicit, _, explicit_job, _, _ = run_helper(
+                    helper, "success", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(explicit.returncode, 0, explicit.stderr)
+                self.assertEqual(explicit_job["spec"]["template"]["spec"]["serviceAccountName"], "tsystem-api")
+
+                default, _, default_job, _, _ = run_helper(
+                    helper, "success_default_sa", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(default.returncode, 0, default.stderr)
+                self.assertNotIn("serviceAccountName", default_job["spec"]["template"]["spec"])
 
     def test_failed_timed_out_and_unobservable_jobs_never_advance_state(self):
         for helper in HELPERS:

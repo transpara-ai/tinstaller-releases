@@ -112,7 +112,9 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
   apiVersion: "batch/v1", kind: "Job",
   metadata: {name: $job, namespace: $ns, labels: {app: "migrations-replay"}},
   spec: {backoffLimit: 0, ttlSecondsAfterFinished: 86400, template: {spec: {
-    serviceAccountName: ($p.serviceAccountName // "tsystem-api"),
+    # Omission means Kubernetes uses the namespace default account, just as
+    # it does for the source Deployment; never elevate the replay Job.
+    serviceAccountName: $p.serviceAccountName,
     restartPolicy: "Never",
     imagePullSecrets: ($p.imagePullSecrets // []),
     volumes: (($p.volumes // []) + [{name: "migrations", emptyDir: {}}]),
@@ -125,7 +127,9 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
       command: ["python", "-c", $py, $from, $to, $ns, $dry, $only],
       env: ($c.env // []), envFrom: ($c.envFrom // []),
       volumeMounts: (($c.volumeMounts // []) + [{name: "migrations", mountPath: "/shared/migrations"}])}]
-  }}}}' | kubectl -n "$NS" apply -f -
+  }}}}
+  | if .spec.template.spec.serviceAccountName == null
+    then del(.spec.template.spec.serviceAccountName) else . end' | kubectl -n "$NS" apply -f -
 
 echo "waiting for job/$JOB ..."
 # A failed or unobservable Job must not be reported as a completed repair.
