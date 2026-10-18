@@ -2,7 +2,8 @@
 # Compatibility entry point; keep its safety checks aligned with migration.sh.
 # This copy stays standalone for callers that pipe this historical script to bash.
 # Re-run cluster migrations skipped by a direct pre-bridge (<0.274.0) -> post-bridge upgrade.
-# Clones the tsystem-api Deployment pod (service account, env, volumes) into a one-off Job, mounts the
+# Clones the tsystem-api Deployment pod's service-account settings, env and
+# volumes into a one-off Job, mounts the
 # TinstallerMigrationImage for the installed release, and runs pre+post migrations for
 # (FROM, TO]. Mirrors what the upgrade orchestrator does with the load-migrations initContainer.
 #
@@ -119,6 +120,9 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
     # Omission means Kubernetes uses the namespace default account, just as
     # it does for the source Deployment; never elevate the replay Job.
     serviceAccountName: $p.serviceAccountName,
+    # Preserve an explicit false: omitting it could mount a token that the
+    # source Deployment deliberately suppressed.
+    automountServiceAccountToken: $p.automountServiceAccountToken,
     restartPolicy: "Never",
     imagePullSecrets: ($p.imagePullSecrets // []),
     volumes: (($p.volumes // []) + [{name: "migrations", emptyDir: {}}]),
@@ -133,7 +137,9 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
       volumeMounts: (($c.volumeMounts // []) + [{name: "migrations", mountPath: "/shared/migrations"}])}]
   }}}}
   | if .spec.template.spec.serviceAccountName == null
-    then del(.spec.template.spec.serviceAccountName) else . end' | kubectl -n "$NS" apply -f -
+    then del(.spec.template.spec.serviceAccountName) else . end
+  | if .spec.template.spec.automountServiceAccountToken == null
+    then del(.spec.template.spec.automountServiceAccountToken) else . end' | kubectl -n "$NS" apply -f -
 
 echo "waiting for job/$JOB ..."
 # A failed or unobservable Job must not be reported as a completed repair.
@@ -172,6 +178,8 @@ case "$RESULT" in
      exit 1;;
 esac
 if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
+  # $to is a jq variable bound by --arg; the shell must not expand it.
+  # shellcheck disable=SC2016
   PATCH=$(jq -nc --arg to "$TO" '{data: {MIGRATIONS_APPLIED_THROUGH: $to}}')
   kubectl -n "$NS" patch cm tinstaller-state --type merge -p "$PATCH"
   echo "tinstaller-state MIGRATIONS_APPLIED_THROUGH=$TO"

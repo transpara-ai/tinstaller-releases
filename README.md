@@ -77,10 +77,18 @@ concurrent Jobs. The operator running either helper needs namespace access to:
 - get/list Pods and get Pod logs for `kubectl logs job/<name>`.
 
 The replay Job uses the API Deployment's service-account identity and needs its
-own migration permissions. A named account is copied exactly. If the Deployment
-omits `serviceAccountName`, the Job omits it too and Kubernetes selects the
-namespace's `default` account; the helper never substitutes a more privileged
-account. The helper does not grant either identity access.
+own migration permissions. A named account is copied exactly. An explicit
+`automountServiceAccountToken: false` or `true` is also copied, so a source Pod
+that suppresses bearer-token mounting cannot accidentally gain one in the Job.
+The migration runner uses in-cluster Kubernetes access; when automount is
+disabled and no other authorized Kubernetes credentials are supplied, the Job
+will fail and the helper will leave the migration state unchanged. Qualify a
+compatible identity in a disposable cluster before replay.
+If the Deployment omits `serviceAccountName`, the Job omits it too and
+Kubernetes selects the namespace's `default` account; the helper never
+substitutes a more privileged account. Omitted automount settings remain
+omitted. The helper does not grant
+either identity access.
 This adds one create and one delete API request per completed replay. A failed
 Job leaves the migration state unchanged. On timeout or lost Job status, the
 script attempts foreground deletion and reports if it cannot confirm it. A

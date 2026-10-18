@@ -45,13 +45,21 @@ elif "get" in args and "deploy" in args:
         spec = {"containers": [{"image": "registry.example/transpara/tsystem-api:1.0"}]}
         if mode != "success_default_sa":
             spec["serviceAccountName"] = "tsystem-api"
+        if mode == "success_automount_off":
+            spec["automountServiceAccountToken"] = False
+        elif mode == "success_automount_on":
+            spec["automountServiceAccountToken"] = True
         print(json.dumps({"spec": {"template": {"spec": spec}}}))
     else:
         print("registry.example/transpara/tsystem-api:1.0")
 elif "get" in args and "job" in args:
     if mode == "unobservable":
         raise SystemExit("simulated Kubernetes read failure")
-    status = {"succeeded": 1} if mode in ("success", "success_default_sa", "prior_complete", "lock_hold", "patch_unknown") else (
+    successful_modes = (
+        "success", "success_default_sa", "success_automount_off",
+        "success_automount_on", "prior_complete", "lock_hold", "patch_unknown",
+    )
+    status = {"succeeded": 1} if mode in successful_modes else (
         {"failed": 1} if mode == "failed" else {})
     print(json.dumps({"status": status}))
 elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg in args)):
@@ -227,7 +235,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     self.assertIsNone(limited_patch)
                     self.assertFalse(limited_locked)
 
-    def test_replay_uses_the_deployments_actual_service_account(self):
+    def test_replay_preserves_deployment_service_account_settings(self):
         for helper in HELPERS:
             with self.subTest(helper=helper):
                 explicit, _, explicit_job, _, _ = run_helper(
@@ -235,12 +243,26 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 )
                 self.assertEqual(explicit.returncode, 0, explicit.stderr)
                 self.assertEqual(explicit_job["spec"]["template"]["spec"]["serviceAccountName"], "tsystem-api")
+                self.assertNotIn("automountServiceAccountToken", explicit_job["spec"]["template"]["spec"])
 
                 default, _, default_job, _, _ = run_helper(
                     helper, "success_default_sa", "0.272.0", "0.274.0"
                 )
                 self.assertEqual(default.returncode, 0, default.stderr)
                 self.assertNotIn("serviceAccountName", default_job["spec"]["template"]["spec"])
+                self.assertNotIn("automountServiceAccountToken", default_job["spec"]["template"]["spec"])
+
+                for mode, expected in (("success_automount_off", False),
+                                       ("success_automount_on", True)):
+                    with self.subTest(mode=mode):
+                        result, _, job, _, _ = run_helper(
+                            helper, mode, "0.272.0", "0.274.0"
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIs(
+                            job["spec"]["template"]["spec"]["automountServiceAccountToken"],
+                            expected,
+                        )
 
     def test_failed_timed_out_and_unobservable_jobs_never_advance_state(self):
         for helper in HELPERS:
