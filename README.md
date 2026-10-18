@@ -61,11 +61,16 @@ success. Stubbed tests
 cover these control paths; they do not qualify the API image, migration code,
 credentials or a live cluster.
 
-If a process is interrupted or cannot confirm Job deletion, its lock remains.
+If a process is interrupted, cannot confirm Job deletion, or gets an uncertain
+error while creating the Job or patching the state marker, its lock remains.
+The API server may have accepted a request even when the client reports
+failure, so these paths must not release the lock automatically.
 Before clearing it, inspect `kubectl -n transpara get cm tinstaller-migrations-replay-lock -o yaml`
 for the holder Job name and target, check that Job's terminal condition (or
-confirm its deletion), and confirm no helper process is still running. Only then
-delete the lock ConfigMap and retry. The Job-list check still protects against
+confirm its absence or deletion), inspect the current
+`tinstaller-state.MIGRATIONS_APPLIED_THROUGH` value, and confirm no helper
+process is still running. Only then delete the lock ConfigMap and retry.
+The Job-list check still protects against
 an upgrade that was already underway; upgrades started after that check require
 operational coordination.
 

@@ -51,7 +51,7 @@ elif "get" in args and "deploy" in args:
 elif "get" in args and "job" in args:
     if mode == "unobservable":
         raise SystemExit("simulated Kubernetes read failure")
-    status = {"succeeded": 1} if mode in ("success", "prior_complete", "lock_hold") else (
+    status = {"succeeded": 1} if mode in ("success", "prior_complete", "lock_hold", "patch_unknown") else (
         {"failed": 1} if mode == "failed" else {})
     print(json.dumps({"status": status}))
 elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg in args)):
@@ -75,11 +75,21 @@ elif "create" in args and "configmap" in args:
     with os.fdopen(fd, "w") as lock:
         lock.write(next((arg.split("=", 1)[1] for arg in args if arg.startswith("--from-literal=holder=")), ""))
     if mode == "lock_hold":
-        time.sleep(0.5)
+        # Keep the first process at the API boundary until the test confirms
+        # that the second process was rejected. A fixed sleep is timing-sensitive.
+        deadline = time.monotonic() + 10
+        while not (root / "release-first").exists():
+            if time.monotonic() >= deadline:
+                raise SystemExit("test did not release the first lock holder")
+            time.sleep(0.01)
 elif "apply" in args:
     (root / "job.json").write_text(sys.stdin.read())
+    if mode == "apply_unknown":
+        raise SystemExit("simulated response failure after Job submission")
 elif "patch" in args:
     (root / "patch.json").write_text(args[args.index("-p") + 1])
+    if mode == "patch_unknown":
+        raise SystemExit("simulated response failure after state patch")
 elif "logs" in args:
     print("stub Job log")
 elif "delete" in args:
@@ -112,7 +122,8 @@ def run_helper(helper, mode, *arguments):
         calls = [json.loads(line) for line in calls_path.read_text().splitlines()] if calls_path.exists() else []
         job = json.loads((root / "job.json").read_text()) if (root / "job.json").exists() else None
         patch = json.loads((root / "patch.json").read_text()) if (root / "patch.json").exists() else None
-        return result, calls, job, patch
+        locked = (root / "replay.lock").exists()
+        return result, calls, job, patch, locked
 
 
 class MigrationHelperSafetyTests(unittest.TestCase):
@@ -124,13 +135,13 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     ("--only",),
                     ("--only", "bad-value", "0.272.0", "0.274.0"),
                 ):
-                    result, calls, job, patch = run_helper(helper, "success", *arguments)
+                    result, calls, job, patch, _ = run_helper(helper, "success", *arguments)
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIsNone(job)
                     self.assertIsNone(patch)
                     self.assertFalse(any("apply" in call for call in calls))
                 # The upgrade ConfigMap is a separate input source from CLI arguments.
-                result, calls, job, patch = run_helper(
+                result, calls, job, patch, _ = run_helper(
                     helper, "bad_payload", "0.272.0"
                 )
                 self.assertEqual(result.returncode, 2, result.stderr)
@@ -143,7 +154,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
             for mode in ("active", "retry_wait", "unstarted"):
                 for prefix in ((), ("--only", "enable_tcache_auth")):
                     with self.subTest(helper=helper, mode=mode, prefix=prefix):
-                        result, _, job, patch = run_helper(
+                        result, _, job, patch, _ = run_helper(
                             helper, mode, *prefix, "0.272.0", "0.274.0"
                         )
                         self.assertNotEqual(result.returncode, 0)
@@ -154,12 +165,13 @@ class MigrationHelperSafetyTests(unittest.TestCase):
     def test_terminal_prior_job_allows_replay(self):
         for helper in HELPERS:
             with self.subTest(helper=helper):
-                result, _, job, patch = run_helper(
+                result, _, job, patch, locked = run_helper(
                     helper, "prior_complete", "0.272.0", "0.274.0"
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIsNotNone(job)
                 self.assertIsNotNone(patch)
+                self.assertFalse(locked)
 
     def test_atomic_lock_blocks_simultaneous_entry_points(self):
         # The first command holds the lock while its stub waits. The second
@@ -188,6 +200,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 self.assertIn("replay lock", second.stderr)
                 self.assertNotIn("waiting for job/", second.stdout)
             finally:
+                (root / "release-first").write_text("")
                 stdout, stderr = first.communicate(timeout=5)
             self.assertEqual(first.returncode, 0, stderr + stdout)
             self.assertFalse((root / "replay.lock").exists())
@@ -195,7 +208,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
     def test_success_uses_data_arguments_and_only_full_run_advances_state(self):
         for helper in HELPERS:
             with self.subTest(helper=helper):
-                result, _, job, patch = run_helper(
+                result, _, job, patch, locked = run_helper(
                     helper, "success", "0.272.0", "0.274.0"
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -205,28 +218,46 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 self.assertIn("sys.argv[1:6]", command[2])
                 self.assertEqual(command[3:], ["0.272.0", "0.274.0", "transpara", "0", ""])
                 self.assertEqual(patch, {"data": {"MIGRATIONS_APPLIED_THROUGH": "0.274.0"}})
+                self.assertFalse(locked)
                 for prefix in (("--dry-run",), ("--only", "enable_tcache_auth")):
-                    limited, _, _, limited_patch = run_helper(
+                    limited, _, _, limited_patch, limited_locked = run_helper(
                         helper, "success", *prefix, "0.272.0", "0.274.0"
                     )
                     self.assertEqual(limited.returncode, 0, limited.stderr)
                     self.assertIsNone(limited_patch)
+                    self.assertFalse(limited_locked)
 
     def test_failed_timed_out_and_unobservable_jobs_never_advance_state(self):
         for helper in HELPERS:
             for mode in ("failed", "timeout", "unobservable"):
                 with self.subTest(helper=helper, mode=mode):
-                    result, calls, job, patch = run_helper(
+                    result, calls, job, patch, locked = run_helper(
                         helper, mode, "0.272.0", "0.274.0"
                     )
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIsNotNone(job)
                     self.assertIsNone(patch)
+                    self.assertFalse(locked)
                     deletes = [call for call in calls if "delete" in call and "job" in call]
                     self.assertEqual(bool(deletes), mode != "failed")
                     for call in deletes:
                         self.assertIn("--cascade=foreground", call)
                         self.assertIn("--wait=true", call)
+
+    def test_uncertain_apply_and_patch_keep_lock_for_operator_inspection(self):
+        # A client error can arrive after the API server accepted the request.
+        # Releasing the lock here could start a second Job or repeat a patch.
+        for helper in HELPERS:
+            for mode in ("apply_unknown", "patch_unknown"):
+                with self.subTest(helper=helper, mode=mode):
+                    result, calls, job, patch, locked = run_helper(
+                        helper, mode, "0.272.0", "0.274.0"
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIsNotNone(job)
+                    self.assertEqual(patch is not None, mode == "patch_unknown")
+                    self.assertTrue(locked)
+                    self.assertFalse(any("delete" in call and "configmap" in call for call in calls))
 
 
 if __name__ == "__main__":
