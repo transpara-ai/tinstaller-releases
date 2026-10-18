@@ -105,6 +105,8 @@ r.run_post_upgrade(FROM, TO, NS, None, context=ctx); print("POST_DONE", flush=Tr
 PY
 )
 
+# The $names below are jq variables bound by --arg, not shell expansions.
+# shellcheck disable=SC2016
 kubectl -n "$NS" get deploy tsystem-api -o json | jq \
   --arg ns "$NS" --arg job "$JOB" --arg mig "$MIG_IMG" --arg py "$PY" \
   --arg from "$FROM" --arg to "$TO" --arg dry "$DRY" --arg only "$ONLY" '
