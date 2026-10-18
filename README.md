@@ -1,3 +1,18 @@
+---
+doc_id: TINSTALLER-RELEASES-README
+title: tInstaller releases quickstart and migration repair
+doc_type: readme
+status: draft
+version: 0.1.0
+created: 2025-08-13
+updated: 2026-10-18
+owner: Transpara AI
+steward: Codex
+project: tInstaller Releases
+supersedes: []
+canonical: false
+---
+
 # Quickstart
 
 ## Install k3s
@@ -52,7 +67,17 @@ versions and module selectors, stop if an upgrade or another replay Job lacks
 a terminal Complete or Failed condition (including gaps between Pod retries),
 and create an atomic `tinstaller-migrations-replay-lock` ConfigMap before
 starting a replay Job. The lock prevents two helper invocations from starting
-concurrent Jobs; the caller needs permission to create and delete ConfigMaps.
+concurrent Jobs. The operator running either helper needs namespace access to:
+
+- get the `tsystem-api` Deployment;
+- get and list ConfigMaps, create/delete the replay-lock ConfigMap, and patch
+  `tinstaller-state` (the upgrade-record lookup also lists ConfigMaps);
+- get/list/create/patch/delete Jobs, and watch Jobs and ConfigMaps while
+  foreground deletion or lock cleanup completes; and
+- get/list Pods and get Pod logs for `kubectl logs job/<name>`.
+
+The replay Job runs under the API Deployment's service account and needs its
+own migration permissions. The helper does not grant either identity access.
 This adds one create and one delete API request per completed replay. A failed
 Job leaves the migration state unchanged. On timeout or lost Job status, the
 script attempts foreground deletion and reports if it cannot confirm it. A
@@ -79,3 +104,9 @@ bash -n migration.sh fix-skipped-migrations.sh
 shellcheck -s bash migration.sh fix-skipped-migrations.sh
 python scripts/test-migration-helpers.py
 ```
+
+## Revision History
+
+| Version | Date | Change |
+| --- | --- | --- |
+| 0.1.0 | 2026-10-18 | First versioned edition; document migration replay safety, permissions and checks. |
