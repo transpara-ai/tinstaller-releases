@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.5
+version: 0.1.6
 created: 2025-08-13
 updated: 2026-10-19
 owner: Transpara AI
@@ -69,6 +69,11 @@ machine. Both copies receive the same safety tests. Both scripts reject
 malformed versions, reversed or equal version windows, and module selectors.
 The version-window check compares numeric release and prerelease identifiers
 by SemVer precedence, including a numeric identifier before a text identifier.
+Numeric core and prerelease identifiers with leading zeroes are invalid; both
+helpers reject them before creating a Job or advancing the migration marker.
+This check scans the version text once and adds no Kubernetes request. Its
+latency has not been measured separately; time a long accepted tag on the
+target control-plane host if validation cost becomes material.
 They stop if an upgrade or another replay Job lacks a terminal Complete or
 Failed condition (including gaps between Pod retries),
 and create an atomic `tinstaller-migrations-replay-lock` ConfigMap before
@@ -154,3 +159,4 @@ python scripts/test-migration-helpers.py
 | 0.1.3 | 2026-10-19 | Explain compatibility with the published 0.274.0 runner, newer migration collections, and out-of-range selectors. |
 | 0.1.4 | 2026-10-19 | Explain range and marker regression guards, concurrent state patch protection, and why the compatibility entry point stays standalone. |
 | 0.1.5 | 2026-10-19 | Explain prerelease ordering in the version-window and marker guards. |
+| 0.1.6 | 2026-10-19 | Reject zero-padded numeric versions, including prerelease and stored marker values. |

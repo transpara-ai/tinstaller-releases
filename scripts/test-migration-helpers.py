@@ -82,6 +82,7 @@ elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg
         marker = ("0.274.0-alpha.beta" if mode == "marker_mixed_prerelease" else
                   "0.300.0" if mode == "marker_ahead" or
                   (mode == "marker_advanced" and count == 2) else
+                  "0.274.0-alpha.01.a" if mode == "marker_zero_padded" else
                   "invalid!" if mode == "marker_invalid" else "0.274.0")
         print(json.dumps({"metadata": {"resourceVersion": "1"},
                           "data": {"INSTALLER_VERSION": "0.274.0",
@@ -247,7 +248,8 @@ class MigrationHelperSafetyTests(unittest.TestCase):
 
     def test_full_apply_does_not_regress_ahead_or_concurrently_changed_marker(self):
         for helper in HELPERS:
-            for mode in ("marker_ahead", "marker_invalid", "marker_advanced",
+            for mode in ("marker_ahead", "marker_invalid", "marker_zero_padded",
+                         "marker_advanced",
                          "marker_race", "marker_mixed_prerelease"):
                 with self.subTest(helper=helper, mode=mode):
                     target = "0.274.0-alpha.1" if mode == "marker_mixed_prerelease" else "0.274.0"
@@ -255,7 +257,8 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                         helper, mode, "0.272.0", target
                     )
                     self.assertNotEqual(result.returncode, 0)
-                    if mode in ("marker_ahead", "marker_invalid", "marker_mixed_prerelease"):
+                    if mode in ("marker_ahead", "marker_invalid", "marker_zero_padded",
+                                "marker_mixed_prerelease"):
                         self.assertIsNone(job)
                         self.assertFalse(locked)
                         self.assertFalse(any("create" in call for call in calls))
@@ -327,6 +330,28 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 self.assertIsNone(job)
                 self.assertIsNone(patch)
                 self.assertFalse(any("apply" in call for call in calls))
+
+    def test_rejects_zero_padded_numeric_versions_before_creating_job(self):
+        # A padded prerelease identifier could compare equal to its unpadded
+        # form and skip a later identifier, allowing a marker regression.
+        for helper in HELPERS:
+            for source, target in (
+                ("00.272.0", "0.274.0"),
+                ("0.272.0", "0.0274.0"),
+                ("0.272.0-alpha.01.a", "0.274.0"),
+                ("0.272.0", "0.274.0-alpha.01.a"),
+                ("0.272.0", "0.274.0-alpha.00"),
+            ):
+                with self.subTest(helper=helper, source=source, target=target):
+                    result, calls, job, patch, locked = run_helper(
+                        helper, "success", source, target
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("safe release versions", result.stderr)
+                    self.assertIsNone(job)
+                    self.assertIsNone(patch)
+                    self.assertFalse(locked)
+                    self.assertFalse(any("create" in call for call in calls))
 
     def test_active_upgrade_blocks_full_and_module_replay(self):
         for helper in HELPERS:

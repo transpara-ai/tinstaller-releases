@@ -36,10 +36,22 @@ fi
 FROM=${1:-0.272.0}
 TO=${2:-$(kubectl -n "$NS" get cm tinstaller-state -o jsonpath='{.data.INSTALLER_VERSION}')}
 # The version becomes an image tag, a release URL component and a migration bound.
-# Reject other text before it reaches any of those resources.
-valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*)?$ ]]; }
-# Compare numeric identifiers without machine-integer overflow or leading-zero
-# ambiguity. The version parser accepts long identifiers from release inputs.
+# Require SemVer numeric spelling, including prerelease identifiers: accepting
+# "01" as equal to "1" can hide a later identifier and regress the state marker.
+valid_version() {
+  local LC_ALL=C
+  local version=$1 identifier
+  local -a identifiers
+  [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*)?$ ]] || return 1
+  [[ "$version" == *-* ]] || return 0
+  IFS=. read -r -a identifiers <<< "${version#*-}"
+  for identifier in "${identifiers[@]}"; do
+    [[ "$identifier" =~ ^0[0-9]+$ ]] && return 1
+  done
+  return 0
+}
+# Compare numeric identifiers without machine-integer overflow. The version
+# parser accepts long identifiers from release inputs but rejects leading zeroes.
 number_lt() {
   local left=${1#"${1%%[!0]*}"} right=${2#"${2%%[!0]*}"}
   left=${left:-0}; right=${right:-0}
