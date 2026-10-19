@@ -12,7 +12,8 @@
 # --dry-run still creates a Kubernetes Job with the API deployment's service account,
 # images, environment, and volumes; only the migration pre/post steps are skipped.
 # The Job waits up to 20 minutes and has a 24-hour cleanup TTL. On timeout,
-# foreground deletion is attempted; failure to confirm deletion is reported.
+# foreground deletion is attempted. The replay lock remains when execution
+# may have made partial changes, even if Job deletion succeeds.
 set -euo pipefail
 NS=${NS:-transpara}
 DRY=0; ONLY=""
@@ -142,8 +143,10 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
     then del(.spec.template.spec.automountServiceAccountToken) else . end' | kubectl -n "$NS" apply -f -
 
 echo "waiting for job/$JOB ..."
-# A failed or unobservable Job must not be reported as a completed repair.
-# A timed-out Job gets foreground deletion; failed deletion needs operator inspection.
+# A failed, unobservable, or timed-out Job may already have changed the cluster.
+# Stop an unobservable or timed-out Job, but keep the lock after deletion: that
+# confirms only that it stopped, not which migrations ran. Operators must inspect
+# the state and effects before deciding whether any replay is safe.
 stop_replay_job() {
   if ! kubectl -n "$NS" delete job "$JOB" --cascade=foreground --wait=true --timeout=60s; then
     echo "ERROR: could not confirm deletion of job/$JOB in $NS; inspect it before retry." >&2
@@ -156,8 +159,9 @@ FAILED=0
 for i in $(seq 1 240); do
   if ! OBSERVED=$(kubectl -n "$NS" get job "$JOB" -o json |
     jq -r '[.status.succeeded // 0, .status.failed // 0] | @tsv'); then
-    echo "ERROR: lost job/$JOB status in $NS." >&2
-    stop_replay_job && release_lock
+    echo "ERROR: lost job/$JOB status in $NS; migration effects are uncertain." >&2
+    stop_replay_job || true
+    echo "ERROR: replay lock $LOCK remains for operator inspection before retry." >&2
     exit 1
   fi
   read -r SUCCEEDED FAILED <<< "$OBSERVED"
@@ -170,11 +174,12 @@ kubectl -n "$NS" logs "job/$JOB" -c migrate --tail=-1 ||
 echo "Job result: succeeded=$SUCCEEDED failed=$FAILED"
 case "$RESULT" in
   success) ;;
-  failed) echo "ERROR: migration replay Job failed; state was not advanced." >&2
-          release_lock
+  failed) echo "ERROR: migration replay Job failed; state was not advanced and effects may be partial." >&2
+          echo "ERROR: replay lock $LOCK remains for operator inspection before retry." >&2
           exit 1;;
-  *) echo "ERROR: migration replay Job timed out; stopping it." >&2
-     stop_replay_job && release_lock
+  *) echo "ERROR: migration replay Job timed out; stopping it. Migration effects are uncertain." >&2
+     stop_replay_job || true
+     echo "ERROR: replay lock $LOCK remains for operator inspection before retry." >&2
      exit 1;;
 esac
 if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then

@@ -3,9 +3,9 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.1
+version: 0.1.2
 created: 2025-08-13
-updated: 2026-10-18
+updated: 2026-10-19
 owner: Transpara AI
 steward: Codex
 project: tInstaller Releases
@@ -89,23 +89,29 @@ Kubernetes selects the namespace's `default` account; the helper never
 substitutes a more privileged account. Omitted automount settings remain
 omitted. The helper does not grant
 either identity access.
-This adds one create and one delete API request per completed replay. A failed
-Job leaves the migration state unchanged. On timeout or lost Job status, the
-script attempts foreground deletion and reports if it cannot confirm it. A
-full replay advances `MIGRATIONS_APPLIED_THROUGH` only after the Job reports
-success. Stubbed tests
-cover these control paths; they do not qualify the API image, migration code,
-credentials or a live cluster.
+This adds one lock-create and one lock-delete API request per completed replay.
+A failed Job leaves the migration state marker unchanged, but migrations may
+have partially changed cluster resources. On timeout or lost Job status, the
+script attempts foreground deletion and reports if it cannot confirm it.
+Even confirmed deletion only proves that the Job stopped; it does not prove
+which migrations ran. All three paths retain the lock for operator inspection.
+A full replay advances `MIGRATIONS_APPLIED_THROUGH` only after the Job reports
+success. Stubbed tests cover these control paths; they do not qualify the API
+image, migration code, credentials or a live cluster.
 
-If a process is interrupted, cannot confirm Job deletion, or gets an uncertain
-error while creating the Job or patching the state marker, its lock remains.
+If a process is interrupted, a Job fails, times out, or cannot be observed, or
+the helper gets an uncertain error while creating the Job or patching the state
+marker, its lock remains.
 The API server may have accepted a request even when the client reports
 failure, so these paths must not release the lock automatically.
 Before clearing it, inspect `kubectl -n transpara get cm tinstaller-migrations-replay-lock -o yaml`
 for the holder Job name and target, check that Job's terminal condition (or
-confirm its absence or deletion), inspect the current
+confirm its absence or deletion), inspect available Job logs and the current
 `tinstaller-state.MIGRATIONS_APPLIED_THROUGH` value, and confirm no helper
-process is still running. Only then delete the lock ConfigMap and retry.
+process is still running. A missing Job or unchanged marker does not prove
+that no migration changed cluster resources. Check the affected resources and
+decide whether a full replay, a targeted repair, or no replay is safe. Only
+then delete the lock ConfigMap and retry if needed.
 The Job-list check still protects against
 an upgrade that was already underway; upgrades started after that check require
 operational coordination.
@@ -122,3 +128,4 @@ python scripts/test-migration-helpers.py
 | --- | --- | --- |
 | 0.1.0 | 2026-10-18 | First versioned edition; document migration replay safety, permissions and checks. |
 | 0.1.1 | 2026-10-18 | Explain exact service-account inheritance and default-account behavior. |
+| 0.1.2 | 2026-10-19 | Explain retained locks and operator checks after uncertain or partial migration execution. |

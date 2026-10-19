@@ -264,7 +264,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                             expected,
                         )
 
-    def test_failed_timed_out_and_unobservable_jobs_never_advance_state(self):
+    def test_failed_timed_out_and_unobservable_jobs_keep_lock_without_advancing_state(self):
         for helper in HELPERS:
             for mode in ("failed", "timeout", "unobservable"):
                 with self.subTest(helper=helper, mode=mode):
@@ -274,7 +274,11 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIsNotNone(job)
                     self.assertIsNone(patch)
-                    self.assertFalse(locked)
+                    # A terminal failure or confirmed deletion does not prove
+                    # that earlier migration steps left no cluster mutations.
+                    self.assertTrue(locked)
+                    self.assertIn("replay lock", result.stderr)
+                    self.assertFalse(any("delete" in call and "configmap" in call for call in calls))
                     deletes = [call for call in calls if "delete" in call and "job" in call]
                     self.assertEqual(bool(deletes), mode != "failed")
                     for call in deletes:
