@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.2
+version: 0.1.3
 created: 2025-08-13
 updated: 2026-10-19
 owner: Transpara AI
@@ -89,6 +89,15 @@ Kubernetes selects the namespace's `default` account; the helper never
 substitutes a more privileged account. Omitted automount settings remain
 omitted. The helper does not grant
 either identity access.
+
+The published 0.274.0 API image stores migrations in an ordered map and has no
+`pending_versions` method. Newer runners use a list, which can keep multiple
+modules at one version, and expose that method. Both helpers preserve the
+runner's storage type when filtering `--only` and use its own version-window
+logic when the public method is absent. A selector outside `(FROM, TO]` fails
+instead of reporting an empty successful replay. Qualify the API and migration
+images for the intended target release in a disposable cluster before replay.
+
 This adds one lock-create and one lock-delete API request per completed replay.
 A failed Job leaves the migration state marker unchanged, but migrations may
 have partially changed cluster resources. On timeout or lost Job status, the
@@ -129,3 +138,4 @@ python scripts/test-migration-helpers.py
 | 0.1.0 | 2026-10-18 | First versioned edition; document migration replay safety, permissions and checks. |
 | 0.1.1 | 2026-10-18 | Explain exact service-account inheritance and default-account behavior. |
 | 0.1.2 | 2026-10-19 | Explain retained locks and operator checks after uncertain or partial migration execution. |
+| 0.1.3 | 2026-10-19 | Explain compatibility with the published 0.274.0 runner, newer migration collections, and out-of-range selectors. |

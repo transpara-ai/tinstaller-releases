@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -132,6 +133,73 @@ def run_helper(helper, mode, *arguments):
         patch = json.loads((root / "patch.json").read_text()) if (root / "patch.json").exists() else None
         locked = (root / "replay.lock").exists()
         return result, calls, job, patch, locked
+
+
+def run_emitted_dry_run(job, modern_runner):
+    """Execute the Job's Python against the legacy and current runner shapes.
+
+    This isolates the embedded program from Kubernetes and HTTP access. The
+    live-cluster qualification checks the real image and API behavior separately.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        for package in ("kubernetes", "app", "app/upgrade", "app/upgrade/migrations"):
+            path = root / package
+            path.mkdir(parents=True)
+            (path / "__init__.py").write_text("")
+        (root / "kubernetes/config.py").write_text(
+            "def load_incluster_config():\n    pass\n"
+        )
+        (root / "yaml.py").write_text("")
+        (root / "httpx.py").write_text("")
+        # The 0.274.0 runner holds one module per version in an OrderedDict
+        # and has no pending_versions. Later runners use a list that can keep
+        # two modules at the same version and expose pending_versions.
+        runner = '''from collections import OrderedDict
+MODERN = @MODERN@
+
+class OtherMigration:
+    __module__ = "m_0_271_0_other"
+
+class TargetMigration:
+    __module__ = "m_0_272_0_target"
+
+class SecondTargetMigration:
+    __module__ = "m_0_272_0_second_target"
+
+class BaseRunner:
+    def __init__(self):
+        pairs = [("0.271.0", OtherMigration()), ("0.272.0", TargetMigration())]
+        self.migrations = (pairs + [("0.272.0", SecondTargetMigration())]
+                           if MODERN else OrderedDict(pairs))
+
+    def load(self, path):
+        pass
+
+    def _pending(self, current, target):
+        # Fixed fixture versions keep ordering unambiguous; this stub checks
+        # the collection and method contract, not semantic version parsing.
+        pairs = self.migrations if MODERN else self.migrations.items()
+        return ((version, migration) for version, migration in pairs
+                if current < version <= target)
+
+class ModernRunner(BaseRunner):
+    def pending_versions(self, current, target):
+        return [version for version, _ in self._pending(current, target)]
+
+class LegacyRunner(BaseRunner):
+    pass
+
+ClusterMigrationRunner = ModernRunner if MODERN else LegacyRunner
+'''.replace("@MODERN@", repr(modern_runner))
+        (root / "app/upgrade/migrations/runner.py").write_text(runner)
+        command = job["spec"]["template"]["spec"]["containers"][0]["command"]
+        assert command[:2] == ["python", "-c"]
+        return subprocess.run(
+            [sys.executable, *command[1:]],
+            env=dict(os.environ, PYTHONPATH=str(root)), text=True,
+            capture_output=True, timeout=5,
+        )
 
 
 class MigrationHelperSafetyTests(unittest.TestCase):
@@ -263,6 +331,34 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                             job["spec"]["template"]["spec"]["automountServiceAccountToken"],
                             expected,
                         )
+
+    def test_emitted_job_supports_legacy_and_current_runner_contracts(self):
+        for helper in HELPERS:
+            for selector in ((), ("--only", "target")):
+                with self.subTest(helper=helper, selector=selector):
+                    result, _, job, _, _ = run_helper(
+                        helper, "success", "--dry-run", *selector, "0.270.0", "0.274.0"
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    for modern in (False, True):
+                        with self.subTest(modern=modern):
+                            executed = run_emitted_dry_run(job, modern)
+                            self.assertEqual(executed.returncode, 0, executed.stderr)
+                            expected = (["0.272.0"] * (2 if modern else 1)
+                                        if selector else ["0.271.0", "0.272.0"]
+                                        + (["0.272.0"] if modern else []))
+                            self.assertIn("PENDING " + json.dumps(expected), executed.stdout)
+            # A module can exist in the image yet fall outside the requested
+            # version window; report that instead of returning false success.
+            result, _, job, _, _ = run_helper(
+                helper, "success", "--dry-run", "--only", "target", "0.272.0", "0.274.0"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for modern in (False, True):
+                with self.subTest(helper=helper, modern=modern, out_of_range=True):
+                    executed = run_emitted_dry_run(job, modern)
+                    self.assertNotEqual(executed.returncode, 0)
+                    self.assertIn("pending", executed.stderr)
 
     def test_failed_timed_out_and_unobservable_jobs_keep_lock_without_advancing_state(self):
         for helper in HELPERS:

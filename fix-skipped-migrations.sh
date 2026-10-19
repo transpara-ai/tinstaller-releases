@@ -94,9 +94,19 @@ FROM, TO, NS, DRY, ONLY = sys.argv[1:6]
 DRY = DRY == "1"
 r = ClusterMigrationRunner(); r.load("/shared/migrations")
 if ONLY:
-    r.migrations = [(v, m) for v, m in r.migrations if ONLY in type(m).__module__]
+    # The 0.274.0 runner uses an OrderedDict; newer runners use a list so
+    # multiple modules can share a version. Preserve its storage type and order.
+    pairs = r.migrations.items() if isinstance(r.migrations, dict) else r.migrations
+    r.migrations = type(r.migrations)(
+        (v, m) for v, m in pairs if ONLY in type(m).__module__
+    )
     if not r.migrations: sys.exit(f"no migration module matches {ONLY!r}")
-pending = r.pending_versions(FROM, TO)
+# pending_versions was added after the 0.274.0 API image. Both known runners
+# use _pending for execution, so its version window is the fallback here.
+pending = (r.pending_versions(FROM, TO) if hasattr(r, "pending_versions")
+           else [v for v, _ in r._pending(FROM, TO)])
+if ONLY and not pending:
+    sys.exit(f"no migration module matching {ONLY!r} is pending in ({FROM}, {TO}]")
 print("PENDING", json.dumps(pending), flush=True)
 if DRY: sys.exit(0)
 url = f"https://github.com/transpara/tinstaller-releases/releases/download/{TO}/versions.yaml"
