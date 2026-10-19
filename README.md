@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.3
+version: 0.1.4
 created: 2025-08-13
 updated: 2026-10-19
 owner: Transpara AI
@@ -62,9 +62,13 @@ cluster and requires separate operational authorization. `--only <module-substr>
 replays matching migration modules and does not advance `MIGRATIONS_APPLIED_THROUGH`.
 
 `fix-skipped-migrations.sh` remains available as a standalone compatibility
-entry point; prefer `migration.sh` for new use. Both scripts reject malformed
-versions and module selectors, stop if an upgrade or another replay Job lacks
-a terminal Complete or Failed condition (including gaps between Pod retries),
+entry point for existing commands that pipe it directly to Bash; prefer
+`migration.sh` for new use. Its safety logic is copied deliberately because a
+remote wrapper cannot rely on `migration.sh` being present on the operator's
+machine. Both copies receive the same safety tests. Both scripts reject
+malformed versions, reversed or equal version windows, and module selectors.
+They stop if an upgrade or another replay Job lacks a terminal Complete or
+Failed condition (including gaps between Pod retries),
 and create an atomic `tinstaller-migrations-replay-lock` ConfigMap before
 starting a replay Job. The lock prevents two helper invocations from starting
 concurrent Jobs. The operator running either helper needs namespace access to:
@@ -105,7 +109,14 @@ script attempts foreground deletion and reports if it cannot confirm it.
 Even confirmed deletion only proves that the Job stopped; it does not prove
 which migrations ran. All three paths retain the lock for operator inspection.
 A full replay advances `MIGRATIONS_APPLIED_THROUGH` only after the Job reports
-success. Stubbed tests cover these control paths; they do not qualify the API
+success. Before creating a full apply Job, the helper rejects a target older
+than that marker. It reads the marker again after success and patches it only
+if the target is still current or later. The patch tests the ConfigMap's
+resource version, so a concurrent state write makes the patch fail and keeps
+the replay lock for inspection. Invalid marker values also stop a full replay.
+This adds two ConfigMap reads per full apply; the JSON patch replaces the
+previous merge patch. A dry-run or `--only` replay does not read or patch the
+marker. Stubbed tests cover these control paths; they do not qualify the API
 image, migration code, credentials or a live cluster.
 
 If a process is interrupted, a Job fails, times out, or cannot be observed, or
@@ -139,3 +150,4 @@ python scripts/test-migration-helpers.py
 | 0.1.1 | 2026-10-18 | Explain exact service-account inheritance and default-account behavior. |
 | 0.1.2 | 2026-10-19 | Explain retained locks and operator checks after uncertain or partial migration execution. |
 | 0.1.3 | 2026-10-19 | Explain compatibility with the published 0.274.0 runner, newer migration collections, and out-of-range selectors. |
+| 0.1.4 | 2026-10-19 | Explain range and marker regression guards, concurrent state patch protection, and why the compatibility entry point stays standalone. |

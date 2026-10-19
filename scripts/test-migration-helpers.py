@@ -59,6 +59,7 @@ elif "get" in args and "job" in args:
     successful_modes = (
         "success", "success_default_sa", "success_automount_off",
         "success_automount_on", "prior_complete", "lock_hold", "patch_unknown",
+        "marker_advanced", "marker_race",
     )
     status = {"succeeded": 1} if mode in successful_modes else (
         {"failed": 1} if mode == "failed" else {})
@@ -73,6 +74,17 @@ elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg
             print(json.dumps({"request": {
                 "target_version": '0.274.0";__import__("os").system("id")'
             }}))
+    elif "tinstaller-state" in args and args[-1] == "json":
+        # Each full apply reads once before the Job and once after success.
+        reads = root / "state-reads"
+        count = int(reads.read_text()) + 1 if reads.exists() else 1
+        reads.write_text(str(count))
+        marker = ("0.300.0" if mode == "marker_ahead" or
+                  (mode == "marker_advanced" and count == 2) else
+                  "invalid!" if mode == "marker_invalid" else "0.274.0")
+        print(json.dumps({"metadata": {"resourceVersion": "1"},
+                          "data": {"INSTALLER_VERSION": "0.274.0",
+                                   "MIGRATIONS_APPLIED_THROUGH": marker}}))
     else:
         print("0.274.0")
 elif "create" in args and "configmap" in args:
@@ -96,7 +108,13 @@ elif "apply" in args:
     if mode == "apply_unknown":
         raise SystemExit("simulated response failure after Job submission")
 elif "patch" in args:
-    (root / "patch.json").write_text(args[args.index("-p") + 1])
+    patch = json.loads(args[args.index("-p") + 1])
+    assert "--type" in args and args[args.index("--type") + 1] == "json"
+    assert patch[0] == {"op": "test", "path": "/metadata/resourceVersion", "value": "1"}
+    (root / "patch.json").write_text(json.dumps(patch))
+    if mode == "marker_race":
+        # Another writer advanced the state after the helper's final read.
+        raise SystemExit("resourceVersion test failed")
     if mode == "patch_unknown":
         raise SystemExit("simulated response failure after state patch")
 elif "logs" in args:
@@ -203,6 +221,55 @@ ClusterMigrationRunner = ModernRunner if MODERN else LegacyRunner
 
 
 class MigrationHelperSafetyTests(unittest.TestCase):
+    def test_rejects_reversed_or_equal_version_window_before_creating_job(self):
+        # A zero-work Job must never be allowed to write an older or equal
+        # target into the installer migration marker.
+        for helper in HELPERS:
+            for prefix in ((), ("--dry-run",), ("--only", "target")):
+                for source in ("0.274.0", "0.280.0", "0.274.0-rc.1"):
+                    target = "0.274.0-rc.1" if source.endswith("rc.1") else "0.274.0"
+                    with self.subTest(helper=helper, prefix=prefix, source=source):
+                        result, calls, job, patch, locked = run_helper(
+                            helper, "success", *prefix, source, target
+                        )
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("FROM must be earlier", result.stderr)
+                        self.assertIsNone(job)
+                        self.assertIsNone(patch)
+                        self.assertFalse(locked)
+                        self.assertFalse(any("create" in call for call in calls))
+
+    def test_full_apply_does_not_regress_ahead_or_concurrently_changed_marker(self):
+        for helper in HELPERS:
+            for mode in ("marker_ahead", "marker_invalid", "marker_advanced", "marker_race"):
+                with self.subTest(helper=helper, mode=mode):
+                    result, calls, job, patch, locked = run_helper(
+                        helper, mode, "0.272.0", "0.274.0"
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    if mode in ("marker_ahead", "marker_invalid"):
+                        self.assertIsNone(job)
+                        self.assertFalse(locked)
+                        self.assertFalse(any("create" in call for call in calls))
+                    else:
+                        self.assertIsNotNone(job)
+                        self.assertTrue(locked)
+                        if mode == "marker_advanced":
+                            self.assertIn("replay lock", result.stderr)
+                    self.assertEqual(patch is not None, mode == "marker_race")
+                    self.assertFalse(any("delete" in call and "configmap" in call for call in calls))
+
+    def test_prerelease_window_accepts_a_release_as_a_later_target(self):
+        for helper in HELPERS:
+            with self.subTest(helper=helper):
+                result, _, job, patch, locked = run_helper(
+                    helper, "success", "--dry-run", "0.274.0-rc.1", "0.274.0"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNotNone(job)
+                self.assertIsNone(patch)
+                self.assertFalse(locked)
+
     def test_rejects_injection_and_missing_only_argument_before_creating_job(self):
         for helper in HELPERS:
             with self.subTest(helper=helper):
@@ -293,7 +360,10 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 self.assertEqual(command[0:2], ["python", "-c"])
                 self.assertIn("sys.argv[1:6]", command[2])
                 self.assertEqual(command[3:], ["0.272.0", "0.274.0", "transpara", "0", ""])
-                self.assertEqual(patch, {"data": {"MIGRATIONS_APPLIED_THROUGH": "0.274.0"}})
+                self.assertEqual(patch, [
+                    {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
+                    {"op": "add", "path": "/data/MIGRATIONS_APPLIED_THROUGH", "value": "0.274.0"},
+                ])
                 self.assertFalse(locked)
                 for prefix in (("--dry-run",), ("--only", "enable_tcache_auth")):
                     limited, _, _, limited_patch, limited_locked = run_helper(

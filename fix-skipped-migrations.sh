@@ -38,7 +38,22 @@ TO=${2:-$(kubectl -n "$NS" get cm tinstaller-state -o jsonpath='{.data.INSTALLER
 # The version becomes an image tag, a release URL component and a migration bound.
 # Reject other text before it reaches any of those resources.
 valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; }
-ver_lt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
+# Compare numeric release cores first. sort -V places an unqualified release
+# before its prerelease, so handle that case explicitly.
+ver_lt() {
+  local left_core=${1%%-*} right_core=${2%%-*}
+  if [ "$left_core" != "$right_core" ]; then
+    [ "$(printf '%s\n%s\n' "$left_core" "$right_core" | sort -V | head -1)" = "$left_core" ]
+  elif [ "$1" = "$2" ]; then
+    return 1
+  elif [ "$1" = "$left_core" ]; then
+    return 1
+  elif [ "$2" = "$right_core" ]; then
+    return 0
+  else
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
+  fi
+}
 if [ -z "${2:-}" ] && valid_version "$TO" && ver_lt "${TO%%-*}" 0.274.0; then
   # Upgrade still in flight (INSTALLER_VERSION not advanced yet): take the target from its payload.
   CM=$(kubectl -n "$NS" get cm -l app=tsystem-upgrade --sort-by=.metadata.creationTimestamp -o name | tail -1)
@@ -46,6 +61,30 @@ if [ -z "${2:-}" ] && valid_version "$TO" && ver_lt "${TO%%-*}" 0.274.0; then
 fi
 if ! valid_version "$FROM" || ! valid_version "$TO"; then
   echo "ERROR: FROM and TO must be safe release versions." >&2; exit 2
+fi
+if ! ver_lt "$FROM" "$TO"; then
+  echo "ERROR: FROM must be earlier than TO ($FROM >= $TO)." >&2; exit 2
+fi
+check_marker_not_ahead() {
+  local marker
+  if ! marker=$(jq -r '.data | if type == "object" then (.MIGRATIONS_APPLIED_THROUGH // "") else error("missing data") end' <<< "$1"); then
+    echo "ERROR: cannot read tinstaller-state migration marker; inspect it before replay." >&2
+    return 1
+  fi
+  if [ -n "$marker" ] && ! valid_version "$marker"; then
+    echo "ERROR: tinstaller-state has an invalid MIGRATIONS_APPLIED_THROUGH value; inspect it before replay." >&2
+    return 1
+  fi
+  if [ -n "$marker" ] && ver_lt "$TO" "$marker"; then
+    echo "ERROR: TO=$TO would regress MIGRATIONS_APPLIED_THROUGH=$marker; inspect state before replay." >&2
+    return 1
+  fi
+}
+# A full apply changes this marker. Reject an older target before creating a
+# Job; a second check after success catches changes made while the Job ran.
+if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
+  STATE=$(kubectl -n "$NS" get cm tinstaller-state -o json)
+  check_marker_not_ahead "$STATE" || exit 1
 fi
 API_IMG=$(kubectl -n "$NS" get deploy tsystem-api -o jsonpath='{.spec.template.spec.containers[0].image}')
 REPO=${API_IMG%%/tsystem-api*}
@@ -193,10 +232,24 @@ case "$RESULT" in
      exit 1;;
 esac
 if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
-  # $to is a jq variable bound by --arg; the shell must not expand it.
+  STATE=$(kubectl -n "$NS" get cm tinstaller-state -o json)
+  if ! check_marker_not_ahead "$STATE"; then
+    echo "ERROR: replay lock $LOCK remains for operator inspection before retry." >&2
+    exit 1
+  fi
+  RV=$(jq -r '.metadata.resourceVersion // ""' <<< "$STATE")
+  if [ -z "$RV" ]; then
+    echo "ERROR: tinstaller-state has no resourceVersion; replay lock remains for inspection." >&2
+    exit 1
+  fi
+  # The resourceVersion test makes a concurrent ConfigMap write fail instead
+  # of replacing a newer marker. The lock remains if the patch is uncertain.
+  # $rv and $to are jq variables bound by --arg, not shell expansions.
   # shellcheck disable=SC2016
-  PATCH=$(jq -nc --arg to "$TO" '{data: {MIGRATIONS_APPLIED_THROUGH: $to}}')
-  kubectl -n "$NS" patch cm tinstaller-state --type merge -p "$PATCH"
+  PATCH=$(jq -nc --arg rv "$RV" --arg to "$TO" \
+    '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},
+      {"op":"add","path":"/data/MIGRATIONS_APPLIED_THROUGH","value":$to}]')
+  kubectl -n "$NS" patch cm tinstaller-state --type json -p "$PATCH"
   echo "tinstaller-state MIGRATIONS_APPLIED_THROUGH=$TO"
 fi
 release_lock
