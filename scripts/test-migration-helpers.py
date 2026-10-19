@@ -79,7 +79,8 @@ elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg
         reads = root / "state-reads"
         count = int(reads.read_text()) + 1 if reads.exists() else 1
         reads.write_text(str(count))
-        marker = ("0.300.0" if mode == "marker_ahead" or
+        marker = ("0.274.0-alpha.beta" if mode == "marker_mixed_prerelease" else
+                  "0.300.0" if mode == "marker_ahead" or
                   (mode == "marker_advanced" and count == 2) else
                   "invalid!" if mode == "marker_invalid" else "0.274.0")
         print(json.dumps({"metadata": {"resourceVersion": "1"},
@@ -226,9 +227,14 @@ class MigrationHelperSafetyTests(unittest.TestCase):
         # target into the installer migration marker.
         for helper in HELPERS:
             for prefix in ((), ("--dry-run",), ("--only", "target")):
-                for source in ("0.274.0", "0.280.0", "0.274.0-rc.1"):
-                    target = "0.274.0-rc.1" if source.endswith("rc.1") else "0.274.0"
-                    with self.subTest(helper=helper, prefix=prefix, source=source):
+                for source, target in (
+                    ("0.274.0", "0.274.0"),
+                    ("0.280.0", "0.274.0"),
+                    ("0.274.0-rc.1", "0.274.0-rc.1"),
+                    ("0.274.0-alpha.beta", "0.274.0-alpha.1"),
+                    ("0.274.0-alpha.100000000000000000000", "0.274.0-alpha.2"),
+                ):
+                    with self.subTest(helper=helper, prefix=prefix, source=source, target=target):
                         result, calls, job, patch, locked = run_helper(
                             helper, "success", *prefix, source, target
                         )
@@ -241,13 +247,15 @@ class MigrationHelperSafetyTests(unittest.TestCase):
 
     def test_full_apply_does_not_regress_ahead_or_concurrently_changed_marker(self):
         for helper in HELPERS:
-            for mode in ("marker_ahead", "marker_invalid", "marker_advanced", "marker_race"):
+            for mode in ("marker_ahead", "marker_invalid", "marker_advanced",
+                         "marker_race", "marker_mixed_prerelease"):
                 with self.subTest(helper=helper, mode=mode):
+                    target = "0.274.0-alpha.1" if mode == "marker_mixed_prerelease" else "0.274.0"
                     result, calls, job, patch, locked = run_helper(
-                        helper, mode, "0.272.0", "0.274.0"
+                        helper, mode, "0.272.0", target
                     )
                     self.assertNotEqual(result.returncode, 0)
-                    if mode in ("marker_ahead", "marker_invalid"):
+                    if mode in ("marker_ahead", "marker_invalid", "marker_mixed_prerelease"):
                         self.assertIsNone(job)
                         self.assertFalse(locked)
                         self.assertFalse(any("create" in call for call in calls))
@@ -261,14 +269,41 @@ class MigrationHelperSafetyTests(unittest.TestCase):
 
     def test_prerelease_window_accepts_a_release_as_a_later_target(self):
         for helper in HELPERS:
-            with self.subTest(helper=helper):
-                result, _, job, patch, locked = run_helper(
-                    helper, "success", "--dry-run", "0.274.0-rc.1", "0.274.0"
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIsNotNone(job)
-                self.assertIsNone(patch)
-                self.assertFalse(locked)
+            for source, target in (("0.274.0-rc.1", "0.274.0"),
+                                   ("0.274.0-alpha.1", "0.274.0-alpha.beta"),
+                                   ("0.274.0-alpha", "0.274.0-alpha.1")):
+                with self.subTest(helper=helper, source=source, target=target):
+                    result, _, job, patch, locked = run_helper(
+                        helper, "success", "--dry-run", source, target
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIsNotNone(job)
+                    self.assertIsNone(patch)
+                    self.assertFalse(locked)
+
+    def test_prerelease_precedence_matches_numeric_and_text_identifier_rules(self):
+        # This is the SemVer precedence chain. Adjacent pairs exercise the
+        # comparator through each helper's public CLI in both directions.
+        ordered = (
+            "0.274.0-alpha", "0.274.0-alpha.1", "0.274.0-alpha.beta",
+            "0.274.0-beta", "0.274.0-beta.2", "0.274.0-beta.11",
+            "0.274.0-rc.1", "0.274.0",
+        )
+        for helper in HELPERS:
+            for earlier, later in zip(ordered, ordered[1:]):
+                with self.subTest(helper=helper, earlier=earlier, later=later):
+                    forward, _, job, _, _ = run_helper(
+                        helper, "success", "--dry-run", earlier, later
+                    )
+                    self.assertEqual(forward.returncode, 0, forward.stderr)
+                    self.assertIsNotNone(job)
+                    reverse, _, job, patch, locked = run_helper(
+                        helper, "success", "--dry-run", later, earlier
+                    )
+                    self.assertEqual(reverse.returncode, 2, reverse.stderr)
+                    self.assertIsNone(job)
+                    self.assertIsNone(patch)
+                    self.assertFalse(locked)
 
     def test_rejects_injection_and_missing_only_argument_before_creating_job(self):
         for helper in HELPERS:
@@ -277,6 +312,7 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     ("0.272.0", '0.274.0";__import__("os").system("id")'),
                     ("--only",),
                     ("--only", "bad-value", "0.272.0", "0.274.0"),
+                    ("0.272.0", "0.274.0-alpha..beta"),
                 ):
                     result, calls, job, patch, _ = run_helper(helper, "success", *arguments)
                     self.assertEqual(result.returncode, 2, result.stderr)

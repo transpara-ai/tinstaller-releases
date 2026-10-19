@@ -37,22 +37,50 @@ FROM=${1:-0.272.0}
 TO=${2:-$(kubectl -n "$NS" get cm tinstaller-state -o jsonpath='{.data.INSTALLER_VERSION}')}
 # The version becomes an image tag, a release URL component and a migration bound.
 # Reject other text before it reaches any of those resources.
-valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; }
-# Compare numeric release cores first. sort -V places an unqualified release
-# before its prerelease, so handle that case explicitly.
-ver_lt() {
-  local left_core=${1%%-*} right_core=${2%%-*}
-  if [ "$left_core" != "$right_core" ]; then
-    [ "$(printf '%s\n%s\n' "$left_core" "$right_core" | sort -V | head -1)" = "$left_core" ]
-  elif [ "$1" = "$2" ]; then
-    return 1
-  elif [ "$1" = "$left_core" ]; then
-    return 1
-  elif [ "$2" = "$right_core" ]; then
-    return 0
+valid_version() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*)?$ ]]; }
+# Compare numeric identifiers without machine-integer overflow or leading-zero
+# ambiguity. The version parser accepts long identifiers from release inputs.
+number_lt() {
+  local left=${1#"${1%%[!0]*}"} right=${2#"${2%%[!0]*}"}
+  left=${left:-0}; right=${right:-0}
+  if [ "${#left}" -ne "${#right}" ]; then
+    [ "${#left}" -lt "${#right}" ]
   else
-    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
+    [[ "$left" < "$right" ]]
   fi
+}
+# SemVer compares release components numerically. In a prerelease, numeric
+# identifiers sort before text; otherwise identifiers compare as ASCII text.
+# A shorter equal-prefix prerelease is earlier than a longer one, and any
+# prerelease is earlier than the unqualified release.
+ver_lt() {
+  local LC_ALL=C
+  local left_core=${1%%-*} right_core=${2%%-*}
+  local -a left_parts right_parts
+  local i left_id right_id
+  IFS=. read -r -a left_parts <<< "$left_core"
+  IFS=. read -r -a right_parts <<< "$right_core"
+  for i in 0 1 2; do
+    if number_lt "${left_parts[i]}" "${right_parts[i]}"; then return 0; fi
+    if number_lt "${right_parts[i]}" "${left_parts[i]}"; then return 1; fi
+  done
+  if [ "$1" = "$left_core" ]; then return 1; fi
+  if [ "$2" = "$right_core" ]; then return 0; fi
+  IFS=. read -r -a left_parts <<< "${1#*-}"
+  IFS=. read -r -a right_parts <<< "${2#*-}"
+  for ((i=0; i<${#left_parts[@]} && i<${#right_parts[@]}; i++)); do
+    left_id=${left_parts[i]}; right_id=${right_parts[i]}
+    if [ "$left_id" = "$right_id" ]; then continue; fi
+    if [[ "$left_id" =~ ^[0-9]+$ ]]; then
+      if [[ "$right_id" =~ ^[0-9]+$ ]]; then
+        number_lt "$left_id" "$right_id"; return
+      fi
+      return 0
+    fi
+    if [[ "$right_id" =~ ^[0-9]+$ ]]; then return 1; fi
+    [[ "$left_id" < "$right_id" ]]; return
+  done
+  [ "${#left_parts[@]}" -lt "${#right_parts[@]}" ]
 }
 if [ -z "${2:-}" ] && valid_version "$TO" && ver_lt "${TO%%-*}" 0.274.0; then
   # Upgrade still in flight (INSTALLER_VERSION not advanced yet): take the target from its payload.
