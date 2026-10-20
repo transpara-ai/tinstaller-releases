@@ -67,7 +67,7 @@ elif "get" in args and "job" in args:
     successful_modes = (
         "success", "success_default_sa", "success_automount_off",
         "success_automount_on", "prior_complete", "lock_hold", "patch_unknown",
-        "missing_mcp_cr",
+        "missing_mcp_cr", "missing_mcp_crd",
         "marker_advanced", "marker_race",
     )
     status = {"succeeded": 1} if mode in successful_modes else (
@@ -232,6 +232,48 @@ ClusterMigrationRunner = ModernRunner if MODERN else LegacyRunner
 
 
 class MigrationHelperSafetyTests(unittest.TestCase):
+    def test_targeted_mcp_replay_checks_crd_and_cr_without_patching_marker(self):
+        # --only filters Python module paths by substring. Every selector
+        # that can choose the published MCP module must keep its safety
+        # checks, while an unrelated repair remains possible on its own.
+        for helper in HELPERS:
+            for selector in ("transpara_mcp", "m_0_272_0", "install",
+                             "m_0_272_0_install_transpara_mcp"):
+                with self.subTest(helper=helper, selector=selector):
+                    blocked, _, job, patch, locked = run_helper(
+                        helper, "missing_mcp_crd", "--only", selector,
+                        "0.270.0", "0.274.0"
+                    )
+                    self.assertNotEqual(blocked.returncode, 0)
+                    self.assertIn("install the target operator CRDs", blocked.stderr)
+                    self.assertIsNone(job)
+                    self.assertIsNone(patch)
+                    self.assertFalse(locked)
+                    incomplete, _, job, patch, locked = run_helper(
+                        helper, "missing_mcp_cr", "--only", selector,
+                        "0.270.0", "0.274.0"
+                    )
+                    self.assertNotEqual(incomplete.returncode, 0)
+                    self.assertIsNotNone(job)
+                    self.assertIsNone(patch)
+                    self.assertTrue(locked)
+                    self.assertIn("replay lock remains", incomplete.stderr)
+            repaired, _, job, patch, locked = run_helper(
+                helper, "success", "--only", "transpara_mcp", "0.270.0", "0.274.0"
+            )
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertIsNotNone(job)
+            self.assertIsNone(patch)
+            self.assertFalse(locked)
+            other, _, job, patch, locked = run_helper(
+                helper, "missing_mcp_crd", "--only", "enable_tcache_auth",
+                "0.270.0", "0.274.0"
+            )
+            self.assertEqual(other.returncode, 0, other.stderr)
+            self.assertIsNotNone(job)
+            self.assertIsNone(patch)
+            self.assertFalse(locked)
+
     def test_crossing_0_272_requires_mcp_crd_before_job(self):
         # A direct pre-bridge upgrade can update the operator image without
         # installing its CRD. Stop before a replay restarts tauth or holds a

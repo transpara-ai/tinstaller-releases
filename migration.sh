@@ -103,14 +103,18 @@ fi
 if ! ver_lt "$FROM" "$TO"; then
   echo "ERROR: FROM must be earlier than TO ($FROM >= $TO)." >&2; exit 2
 fi
-# A full replay crossing 0.272.0 needs the TransparaMcp CRD. The direct
-# pre-bridge upgrade can update the operator image without installing that
-# CRD, so reject the replay before creating a Job or restarting tauth. The
-# migration's other effects may already exist; CRD absence alone is not a
-# reason to roll them back.
+# A replay that selects the 0.272.0 MCP module needs its CRD. The published
+# migration loader sets __module__ to the manifest's module name; --only
+# matches a substring of that name. Use the same name here so an unrelated
+# targeted repair keeps its independent path.
+# The direct pre-bridge upgrade can update the operator image without the
+# CRD, so reject the MCP replay before it creates a Job or restarts tauth.
+# Other migration effects may already exist and must not be rolled back.
 NEEDS_MCP_CR=0
-if [ "$DRY" = 0 ] && [ -z "$ONLY" ] &&
-   ver_lt "$FROM" 0.272.0 && ! ver_lt "$TO" 0.272.0; then
+MCP_MODULE=m_0_272_0_install_transpara_mcp
+if [ "$DRY" = 0 ] && ver_lt "$FROM" 0.272.0 &&
+   ! ver_lt "$TO" 0.272.0 &&
+   { [ -z "$ONLY" ] || [[ "$MCP_MODULE" == *"$ONLY"* ]]; }; then
   NEEDS_MCP_CR=1
   if ! kubectl get crd transparamcps.charts.transpara.com -o name >/dev/null 2>&1; then
     echo "ERROR: the 0.272.0 migration needs CRD transparamcps.charts.transpara.com; install the target operator CRDs before replay." >&2
@@ -284,8 +288,9 @@ case "$RESULT" in
      exit 1;;
 esac
 # Older API upgrade runners can mark the 0.272.0 migration complete even if
-# its TransparaMcp create failed. A successful replay Job must leave the CR
-# present before this helper advances its independent installer marker.
+# its TransparaMcp create failed. A successful full or matching --only replay
+# must leave the CR present before this helper reports success or advances its
+# independent installer marker.
 if [ "$NEEDS_MCP_CR" = 1 ] &&
    ! kubectl -n "$NS" get transparamcps.charts.transpara.com transpara-mcp -o name >/dev/null 2>&1; then
   echo "ERROR: replay Job succeeded but TransparaMcp CR transpara-mcp is absent; replay lock remains for inspection." >&2
