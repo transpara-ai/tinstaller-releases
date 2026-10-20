@@ -2,8 +2,8 @@
 # Compatibility entry point; keep its safety checks aligned with migration.sh.
 # This copy stays standalone for callers that pipe this historical script to bash.
 # Re-run cluster migrations skipped by a direct pre-bridge (<0.274.0) -> post-bridge upgrade.
-# Clones the tsystem-api Deployment pod's service-account settings, env and
-# volumes into a one-off Job, mounts the
+# Clones the tsystem-api Deployment pod's identity, env, volumes, security and
+# scheduling settings into a one-off Job, mounts the
 # TinstallerMigrationImage for the installed release, and runs pre+post migrations for
 # (FROM, TO]. Mirrors what the upgrade orchestrator does with the load-migrations initContainer.
 #
@@ -144,7 +144,8 @@ if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
   STATE=$(kubectl -n "$NS" get cm tinstaller-state -o json)
   check_marker_not_ahead "$STATE" || exit 1
 fi
-API_IMG=$(kubectl -n "$NS" get deploy tsystem-api -o jsonpath='{.spec.template.spec.containers[0].image}')
+DEPLOY=$(kubectl -n "$NS" get deploy tsystem-api -o json)
+API_IMG=$(jq -er '.spec.template.spec.containers[0].image | strings' <<< "$DEPLOY")
 REPO=${API_IMG%%/tsystem-api*}
 if [ "$REPO" = "$API_IMG" ]; then
   echo "ERROR: tsystem-api image does not identify a migrations registry." >&2; exit 1
@@ -177,6 +178,60 @@ release_lock() {
     return 1
   fi
 }
+# A terminal upgrade Job can precede Deployment convergence. Require every
+# selected API Pod to be Ready on the desired immutable image before replay.
+# This is a snapshot guard; an upgrade started afterward still needs external
+# coordination because the published upgrade orchestrator does not share lock.
+check_api_rollout() {
+  local desired digest container replicas selector pods
+  if ! DEPLOY=$(kubectl -n "$NS" get deploy tsystem-api -o json); then
+    echo "ERROR: cannot read the API Deployment before replay." >&2; return 1
+  fi
+  desired=$(jq -er '.spec.template.spec.containers[0].image | strings' <<< "$DEPLOY") || return 1
+  if [ "$desired" != "$API_IMG" ] || [[ ! "$desired" =~ @sha256:[0-9a-f]{64}$ ]]; then
+    echo "ERROR: API image changed or lacks a pinned sha256 digest; inspect rollout before replay." >&2; return 1
+  fi
+  digest=${desired##*@}
+  container=$(jq -er '.spec.template.spec.containers[0].name | strings' <<< "$DEPLOY") || return 1
+  replicas=$(jq -er '.spec.replicas // 1' <<< "$DEPLOY") || return 1
+  if ! jq -e --argjson replicas "$replicas" '
+    .metadata.generation as $generation |
+    .status.observedGeneration as $observed |
+    ($replicas > 0 and $observed >= $generation and
+     .status.updatedReplicas == $replicas and
+     .status.readyReplicas == $replicas and
+     .status.availableReplicas == $replicas)' <<< "$DEPLOY" >/dev/null; then
+    echo "ERROR: API Deployment has not converged to its desired replicas." >&2; return 1
+  fi
+  # Reject unsupported selector forms instead of inspecting the wrong Pods.
+  selector=$(jq -er '
+    .spec.selector as $s |
+    if (($s.matchExpressions // []) | length) > 0 or
+       (($s.matchLabels // {}) | length) == 0 then error("unsupported selector")
+    else $s.matchLabels | to_entries | sort_by(.key) |
+      map("\(.key)=\(.value)") | join(",") end' <<< "$DEPLOY") || {
+    echo "ERROR: API Deployment needs a nonempty matchLabels selector for replay." >&2; return 1
+  }
+  if ! pods=$(kubectl -n "$NS" get pods -l "$selector" -o json); then
+    echo "ERROR: cannot read API Pods before replay." >&2; return 1
+  fi
+  if ! jq -e --arg image "$desired" --arg digest "$digest" \
+      --arg container "$container" --argjson replicas "$replicas" '
+    (.items | type) == "array" and (.items | length) == $replicas and
+    all(.items[];
+      .metadata.deletionTimestamp == null and
+      (.spec.containers | any(.name == $container and .image == $image)) and
+      (.status.conditions // [] | any(.type == "Ready" and .status == "True")) and
+      (.status.containerStatuses // [] | any(
+        .name == $container and .ready == true and
+        (.imageID | strings | endswith("@" + $digest)))))' <<< "$pods" >/dev/null; then
+    echo "ERROR: API Pods are not all Ready on the desired image digest." >&2; return 1
+  fi
+}
+if ! check_api_rollout; then
+  release_lock
+  exit 1
+fi
 echo "FROM=$FROM TO=$TO DRY_RUN=$DRY ONLY=${ONLY:-<all>}"
 echo "runner image:     $API_IMG"
 echo "migrations image: $MIG_IMG"
@@ -218,13 +273,16 @@ PY
 
 # The $names below are jq variables bound by --arg, not shell expansions.
 # shellcheck disable=SC2016
-kubectl -n "$NS" get deploy tsystem-api -o json | jq \
+jq \
   --arg ns "$NS" --arg job "$JOB" --arg mig "$MIG_IMG" --arg py "$PY" \
   --arg from "$FROM" --arg to "$TO" --arg dry "$DRY" --arg only "$ONLY" '
   .spec.template.spec as $p | ($p.containers[0]) as $c | {
   apiVersion: "batch/v1", kind: "Job",
   metadata: {name: $job, namespace: $ns, labels: {app: "migrations-replay"}},
-  spec: {backoffLimit: 0, ttlSecondsAfterFinished: 86400, template: {spec: {
+  # The API server stops a stranded Job after 20 minutes even if the invoking
+  # shell exits. TTL cleans only terminal Jobs; it is not a runtime limit.
+  spec: {backoffLimit: 0, activeDeadlineSeconds: 1200,
+    ttlSecondsAfterFinished: 86400, template: {spec: {
     # Omission means Kubernetes uses the namespace default account, just as
     # it does for the source Deployment; never elevate the replay Job.
     serviceAccountName: $p.serviceAccountName,
@@ -237,6 +295,14 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
     securityContext: $p.securityContext,
     runtimeClassName: $p.runtimeClassName,
     hostUsers: $p.hostUsers,
+    # A dedicated or tainted API node may be the only place its credentials,
+    # mounts and network dependencies work. Keep its scheduling requirements.
+    nodeSelector: $p.nodeSelector,
+    tolerations: $p.tolerations,
+    affinity: $p.affinity,
+    priorityClassName: $p.priorityClassName,
+    schedulerName: $p.schedulerName,
+    topologySpreadConstraints: $p.topologySpreadConstraints,
     restartPolicy: "Never",
     imagePullSecrets: ($p.imagePullSecrets // []),
     volumes: (($p.volumes // []) + [{name: "migrations", emptyDir: {}}]),
@@ -262,10 +328,11 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
     then del(.spec.template.spec.runtimeClassName) else . end
   | if .spec.template.spec.hostUsers == null
     then del(.spec.template.spec.hostUsers) else . end
+  | .spec.template.spec |= with_entries(select(.value != null))
   | if .spec.template.spec.initContainers[-1].securityContext == null
     then del(.spec.template.spec.initContainers[-1].securityContext) else . end
   | if .spec.template.spec.containers[0].securityContext == null
-    then del(.spec.template.spec.containers[0].securityContext) else . end' | kubectl -n "$NS" apply -f -
+    then del(.spec.template.spec.containers[0].securityContext) else . end' <<< "$DEPLOY" | kubectl -n "$NS" apply -f -
 
 echo "waiting for job/$JOB ..."
 # A failed, unobservable, or timed-out Job may already have changed the cluster.

@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.9
+version: 0.2.0
 created: 2025-08-13
 updated: 2026-10-20
 owner: Transpara AI
@@ -72,9 +72,12 @@ requiring the CRD; it does not prove that an apply can succeed.
 
 `--dry-run` does not invoke the pre- or post-upgrade migrations, but it still
 creates a Kubernetes Job using the API deployment's service account, images,
-environment and volumes to list pending migrations. The Job can run for up to
-20 minutes and has a 24-hour cleanup TTL. Running either command changes the
-cluster and requires separate operational authorization. `--only <module-substr>`
+environment and volumes to list pending migrations. The Job has a 20-minute
+API-server deadline, even if the helper process disappears, and a 24-hour
+cleanup TTL after completion. The client also waits for about 20 minutes;
+failed or unobservable Jobs retain the replay lock. Running either command
+changes the cluster and requires separate operational authorization.
+`--only <module-substr>`
 replays matching migration modules and does not advance `MIGRATIONS_APPLIED_THROUGH`.
 
 `fix-skipped-migrations.sh` remains available as a standalone compatibility
@@ -91,8 +94,16 @@ This check scans the version text once and adds no Kubernetes request. Its
 latency has not been measured separately; time a long accepted tag on the
 target control-plane host if validation cost becomes material.
 They stop if an upgrade or another replay Job lacks a terminal Complete or
-Failed condition (including gaps between Pod retries),
-and create an atomic `tinstaller-migrations-replay-lock` ConfigMap before
+Failed condition (including gaps between Pod retries). They also require all
+desired API replicas to be updated, Ready and available, and every selected
+API Pod to be Ready on the Deployment's pinned SHA-256 image digest. Old or
+terminating Pods, an unpinned image, or an unsupported selector blocks replay
+before Job creation. A disposable qualification observed a 30–89-second gap
+between upgrade Job completion and full API Pod digest convergence; see the
+[PR 5 qualification](docs/pr5-qualification.md). The guard
+uses two Deployment reads and one selected-Pod list per invocation; production
+API latency and load have not been measured. The helpers create an atomic
+`tinstaller-migrations-replay-lock` ConfigMap before
 starting a replay Job. The lock prevents two helper invocations from starting
 concurrent Jobs. The operator running either helper needs namespace access to:
 
@@ -120,6 +131,12 @@ a Job fails and retains its lock. Qualify the migration image under the source
 Deployment's restrictions in a disposable cluster. Copying these fields adds
 no API requests; its scheduling and runtime cost has not been measured on a
 cluster with explicit restrictions.
+The Job also copies the source Pod's node selector, tolerations, affinity,
+priority class, scheduler and topology-spread constraints when present. This
+keeps it eligible for the API workload's intended nodes. An inherited
+constraint can still leave it unschedulable if capacity or policy changes;
+the server deadline stops it and the lock remains. Copying these fields adds
+no API reads. Dedicated-node scheduling has not been qualified live.
 The migration runner uses in-cluster Kubernetes access; when automount is
 disabled and no other authorized Kubernetes credentials are supplied, the Job
 will fail and the helper will leave the migration state unchanged. Qualify a
@@ -172,9 +189,19 @@ process is still running. A missing Job or unchanged marker does not prove
 that no migration changed cluster resources. Check the affected resources and
 decide whether a full replay, a targeted repair, or no replay is safe. Only
 then delete the lock ConfigMap and retry if needed.
-The Job-list check still protects against
-an upgrade that was already underway; upgrades started after that check require
-operational coordination.
+The Job-list and rollout checks protect against an upgrade already underway.
+The published upgrade orchestrator does not use the helper's ConfigMap lock,
+so an upgrade started after those checks can overlap replay. These two writers
+cannot be made atomic by the helper alone. Restrict upgrade initiation for the
+full replay window. This residual concurrency risk needs explicit Human
+acceptance before production replay.
+
+Published tInstaller 0.270.0–0.274.0 artifacts contain a default
+deployment-read token in an operator-manifest URL that can appear in failed
+fetch output. These helpers cannot change or revoke published artifacts.
+The credential owner must rotate exposed values, publish a fixed installer,
+and verify failed-fetch and upgrade logs with a synthetic canary; see
+[tInstaller issue #54](https://github.com/transpara-ai/tinstaller/issues/54).
 
 ```bash
 bash -n migration.sh fix-skipped-migrations.sh
@@ -196,3 +223,4 @@ python scripts/test-migration-helpers.py
 | 0.1.7 | 2026-10-20 | Document the missing CRD observed in a full pre-bridge upgrade and the helper's CRD prerequisite and custom-resource postcondition. |
 | 0.1.8 | 2026-10-20 | Apply the MCP prerequisite and postcondition to matching module-scoped replays, while preserving unrelated targeted repairs. |
 | 0.1.9 | 2026-10-20 | Preserve source Pod and container security contexts and runtime sandbox settings in replay Jobs. |
+| 0.2.0 | 2026-10-20 | Add the Job deadline, API digest-convergence guard and scheduling constraints; record the upgrade race and published credential risk. |

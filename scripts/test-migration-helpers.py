@@ -29,6 +29,8 @@ args = sys.argv[1:]
 with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps(args) + "\n")
 mode = os.environ["STUB_MODE"]
+digest = "sha256:" + "a" * 64
+image = "registry.example/transpara/tsystem-api:1.0@" + digest
 
 if "get" in args and "jobs" in args:
     # A retry gap has zero active Pods but is still eligible to run again.
@@ -51,7 +53,16 @@ elif "get" in args and "transparamcps.charts.transpara.com" in args:
     print("transparamcp.charts.transpara.com/transpara-mcp")
 elif "get" in args and "deploy" in args:
     if args[-1] == "json":
-        spec = {"containers": [{"image": "registry.example/transpara/tsystem-api:1.0"}]}
+        source_image = image
+        if mode == "image_unpinned":
+            source_image = "registry.example/transpara/tsystem-api:1.0"
+        elif mode == "deploy_changed":
+            reads = root / "deployment-reads"
+            count = int(reads.read_text()) + 1 if reads.exists() else 1
+            reads.write_text(str(count))
+            if count > 1:
+                source_image = "registry.example/transpara/tsystem-api:1.0@sha256:" + "b" * 64
+        spec = {"containers": [{"name": "api", "image": source_image}]}
         if mode == "success_security_context":
             spec["securityContext"] = {
                 "runAsNonRoot": True, "runAsUser": 1001, "fsGroup": 1001,
@@ -64,21 +75,57 @@ elif "get" in args and "deploy" in args:
                 "capabilities": {"drop": ["ALL"]},
                 "readOnlyRootFilesystem": True,
             }
+        if mode == "success_scheduling":
+            spec.update({
+                "nodeSelector": {"nodepool": "api"},
+                "tolerations": [{"key": "dedicated", "operator": "Equal",
+                                 "value": "api", "effect": "NoSchedule"}],
+                "affinity": {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [{"matchExpressions": [{"key": "nodepool",
+                        "operator": "In", "values": ["api"]}]}]}}},
+                "priorityClassName": "api-critical", "schedulerName": "custom-scheduler",
+                "topologySpreadConstraints": [{"maxSkew": 1, "topologyKey": "zone",
+                    "whenUnsatisfiable": "DoNotSchedule", "labelSelector": {
+                        "matchLabels": {"app": "tsystem-api"}}}],
+            })
         if mode != "success_default_sa":
             spec["serviceAccountName"] = "tsystem-api"
         if mode == "success_automount_off":
             spec["automountServiceAccountToken"] = False
         elif mode == "success_automount_on":
             spec["automountServiceAccountToken"] = True
-        print(json.dumps({"spec": {"template": {"spec": spec}}}))
+        print(json.dumps({
+            "metadata": {"generation": 2},
+            "spec": {"replicas": 1, "selector": (
+                {"matchExpressions": [{"key": "app", "operator": "In", "values": ["tsystem-api"]}]}
+                if mode == "selector_expressions" else
+                {"matchLabels": {"app": "tsystem-api"}}),
+                     "template": {"spec": spec}},
+            "status": {"observedGeneration": 1 if mode == "rollout_pending" else 2,
+                       "updatedReplicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+        }))
     else:
-        print("registry.example/transpara/tsystem-api:1.0")
+        print(image)
+elif "get" in args and "pods" in args:
+    pod = {
+        "metadata": {"name": "tsystem-api-1", "deletionTimestamp": (
+            "2026-10-20T00:00:00Z" if mode == "pod_terminating" else None)},
+        "spec": {"containers": [{"name": "api", "image": image}]},
+        "status": {"conditions": [{"type": "Ready", "status": (
+            "False" if mode == "pod_not_ready" else "True")}],
+                   "containerStatuses": [{"name": "api", "ready": mode != "pod_not_ready",
+                                          "imageID": "registry.example/transpara/tsystem-api@" + (
+                                              "sha256:" + "b" * 64 if mode == "pod_old_digest"
+                                              else digest)}]},
+    }
+    print(json.dumps({"items": [pod]}))
 elif "get" in args and "job" in args:
     if mode == "unobservable":
         raise SystemExit("simulated Kubernetes read failure")
     successful_modes = (
         "success", "success_default_sa", "success_automount_off",
-        "success_automount_on", "success_security_context", "prior_complete", "lock_hold", "patch_unknown",
+        "success_automount_on", "success_security_context", "success_scheduling",
+        "prior_complete", "lock_hold", "patch_unknown",
         "missing_mcp_cr", "missing_mcp_crd",
         "marker_advanced", "marker_race",
     )
@@ -512,6 +559,9 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(job["metadata"]["namespace"], "transpara")
+                # The API server must stop a stranded privileged Job even if
+                # the shell process disappears before its client-side timeout.
+                self.assertEqual(job["spec"]["activeDeadlineSeconds"], 1200)
                 command = job["spec"]["template"]["spec"]["containers"][0]["command"]
                 self.assertEqual(command[0:2], ["python", "-c"])
                 self.assertIn("sys.argv[1:6]", command[2])
@@ -592,6 +642,52 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     self.assertNotIn(field, default_pod)
                 self.assertNotIn("securityContext", default_pod["containers"][0])
                 self.assertNotIn("securityContext", default_pod["initContainers"][-1])
+
+    def test_replay_preserves_source_pod_scheduling_requirements(self):
+        # A Job with the same identity and volumes must remain schedulable on
+        # dedicated API nodes; absent source constraints must stay absent.
+        fields = ("nodeSelector", "tolerations", "affinity", "priorityClassName",
+                  "schedulerName", "topologySpreadConstraints")
+        for helper in HELPERS:
+            with self.subTest(helper=helper):
+                result, _, job, _, _ = run_helper(
+                    helper, "success_scheduling", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                pod = job["spec"]["template"]["spec"]
+                self.assertEqual(pod["nodeSelector"], {"nodepool": "api"})
+                self.assertEqual(pod["tolerations"][0]["effect"], "NoSchedule")
+                self.assertEqual(pod["affinity"]["nodeAffinity"]
+                                 ["requiredDuringSchedulingIgnoredDuringExecution"]
+                                 ["nodeSelectorTerms"][0]["matchExpressions"][0]["values"],
+                                 ["api"])
+                self.assertEqual(pod["priorityClassName"], "api-critical")
+                self.assertEqual(pod["schedulerName"], "custom-scheduler")
+                self.assertEqual(pod["topologySpreadConstraints"][0]["topologyKey"], "zone")
+                default, _, default_job, _, _ = run_helper(
+                    helper, "success", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(default.returncode, 0, default.stderr)
+                for field in fields:
+                    self.assertNotIn(field, default_job["spec"]["template"]["spec"])
+
+    def test_replay_waits_for_actual_api_digest_convergence(self):
+        # Deployment status and Pod image IDs both matter. An upgrade Job can
+        # finish while old or unready API Pods still serve requests.
+        for helper in HELPERS:
+            for mode in ("rollout_pending", "pod_old_digest", "pod_not_ready",
+                         "pod_terminating", "image_unpinned", "deploy_changed",
+                         "selector_expressions"):
+                with self.subTest(helper=helper, mode=mode):
+                    result, calls, job, patch, locked = run_helper(
+                        helper, mode, "0.272.0", "0.274.0"
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("API", result.stderr)
+                    self.assertIsNone(job)
+                    self.assertIsNone(patch)
+                    self.assertFalse(locked)
+                    self.assertFalse(any("apply" in call for call in calls))
 
     def test_emitted_job_supports_legacy_and_current_runner_contracts(self):
         for helper in HELPERS:
