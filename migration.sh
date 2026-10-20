@@ -178,27 +178,28 @@ release_lock() {
 }
 # A terminal upgrade Job can precede Deployment convergence. Require every
 # selected API Pod to be Ready on the desired immutable image before replay.
-# This is a snapshot guard; an upgrade started afterward still needs external
-# coordination because the published upgrade orchestrator does not share lock.
+# Return the validated Deployment JSON so Job construction uses the exact
+# source that passed these checks. This is a snapshot guard; an upgrade started
+# afterward still needs coordination because its orchestrator does not share lock.
 check_api_rollout() {
-  local desired digest container replicas selector pods
-  if ! DEPLOY=$(kubectl -n "$NS" get deploy tsystem-api -o json); then
+  local deploy desired digest container replicas selector pods
+  if ! deploy=$(kubectl -n "$NS" get deploy tsystem-api -o json); then
     echo "ERROR: cannot read the API Deployment before replay." >&2; return 1
   fi
-  desired=$(jq -er '.spec.template.spec.containers[0].image | strings' <<< "$DEPLOY") || return 1
+  desired=$(jq -er '.spec.template.spec.containers[0].image | strings' <<< "$deploy") || return 1
   if [ "$desired" != "$API_IMG" ] || [[ ! "$desired" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "ERROR: API image changed or lacks a pinned sha256 digest; inspect rollout before replay." >&2; return 1
   fi
   digest=${desired##*@}
-  container=$(jq -er '.spec.template.spec.containers[0].name | strings' <<< "$DEPLOY") || return 1
-  replicas=$(jq -er '.spec.replicas // 1' <<< "$DEPLOY") || return 1
+  container=$(jq -er '.spec.template.spec.containers[0].name | strings' <<< "$deploy") || return 1
+  replicas=$(jq -er '.spec.replicas // 1' <<< "$deploy") || return 1
   if ! jq -e --argjson replicas "$replicas" '
     .metadata.generation as $generation |
     .status.observedGeneration as $observed |
     ($replicas > 0 and $observed >= $generation and
      .status.updatedReplicas == $replicas and
      .status.readyReplicas == $replicas and
-     .status.availableReplicas == $replicas)' <<< "$DEPLOY" >/dev/null; then
+     .status.availableReplicas == $replicas)' <<< "$deploy" >/dev/null; then
     echo "ERROR: API Deployment has not converged to its desired replicas." >&2; return 1
   fi
   # Reject unsupported selector forms instead of inspecting the wrong Pods.
@@ -207,7 +208,7 @@ check_api_rollout() {
     if (($s.matchExpressions // []) | length) > 0 or
        (($s.matchLabels // {}) | length) == 0 then error("unsupported selector")
     else $s.matchLabels | to_entries | sort_by(.key) |
-      map("\(.key)=\(.value)") | join(",") end' <<< "$DEPLOY") || {
+      map("\(.key)=\(.value)") | join(",") end' <<< "$deploy") || {
     echo "ERROR: API Deployment needs a nonempty matchLabels selector for replay." >&2; return 1
   }
   if ! pods=$(kubectl -n "$NS" get pods -l "$selector" -o json); then
@@ -225,8 +226,9 @@ check_api_rollout() {
         (.imageID | strings | endswith("@" + $digest)))))' <<< "$pods" >/dev/null; then
     echo "ERROR: API Pods are not all Ready on the desired image digest." >&2; return 1
   fi
+  printf '%s\n' "$deploy"
 }
-if ! check_api_rollout; then
+if ! DEPLOY=$(check_api_rollout); then
   release_lock
   exit 1
 fi

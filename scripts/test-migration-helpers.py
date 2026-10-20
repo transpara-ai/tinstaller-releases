@@ -56,13 +56,17 @@ elif "get" in args and "deploy" in args:
         source_image = image
         if mode == "image_unpinned":
             source_image = "registry.example/transpara/tsystem-api:1.0"
-        elif mode == "deploy_changed":
+        elif mode in ("deploy_changed", "deploy_scheduling_changed"):
             reads = root / "deployment-reads"
             count = int(reads.read_text()) + 1 if reads.exists() else 1
             reads.write_text(str(count))
-            if count > 1:
+            if mode == "deploy_changed" and count > 1:
                 source_image = "registry.example/transpara/tsystem-api:1.0@sha256:" + "b" * 64
         spec = {"containers": [{"name": "api", "image": source_image}]}
+        if mode == "deploy_scheduling_changed" and count > 1:
+            # The Job must use the second Deployment read that passed the
+            # rollout check, not the first read used to derive the registry.
+            spec["nodeSelector"] = {"nodepool": "api"}
         if mode == "success_security_context":
             spec["securityContext"] = {
                 "runAsNonRoot": True, "runAsUser": 1001, "fsGroup": 1001,
@@ -125,6 +129,7 @@ elif "get" in args and "job" in args:
     successful_modes = (
         "success", "success_default_sa", "success_automount_off",
         "success_automount_on", "success_security_context", "success_scheduling",
+        "deploy_scheduling_changed",
         "prior_complete", "lock_hold", "patch_unknown",
         "missing_mcp_cr", "missing_mcp_crd",
         "marker_advanced", "marker_race",
@@ -670,6 +675,12 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                 self.assertEqual(default.returncode, 0, default.stderr)
                 for field in fields:
                     self.assertNotIn(field, default_job["spec"]["template"]["spec"])
+                changed, _, changed_job, _, _ = run_helper(
+                    helper, "deploy_scheduling_changed", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(changed.returncode, 0, changed.stderr)
+                self.assertEqual(changed_job["spec"]["template"]["spec"]
+                                 ["nodeSelector"], {"nodepool": "api"})
 
     def test_replay_waits_for_actual_api_digest_convergence(self):
         # Deployment status and Pod image IDs both matter. An upgrade Job can
