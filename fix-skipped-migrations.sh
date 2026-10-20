@@ -105,6 +105,20 @@ fi
 if ! ver_lt "$FROM" "$TO"; then
   echo "ERROR: FROM must be earlier than TO ($FROM >= $TO)." >&2; exit 2
 fi
+# A full replay crossing 0.272.0 needs the TransparaMcp CRD. The direct
+# pre-bridge upgrade can update the operator image without installing that
+# CRD, so reject the replay before creating a Job or restarting tauth. The
+# migration's other effects may already exist; CRD absence alone is not a
+# reason to roll them back.
+NEEDS_MCP_CR=0
+if [ "$DRY" = 0 ] && [ -z "$ONLY" ] &&
+   ver_lt "$FROM" 0.272.0 && ! ver_lt "$TO" 0.272.0; then
+  NEEDS_MCP_CR=1
+  if ! kubectl get crd transparamcps.charts.transpara.com -o name >/dev/null 2>&1; then
+    echo "ERROR: the 0.272.0 migration needs CRD transparamcps.charts.transpara.com; install the target operator CRDs before replay." >&2
+    exit 1
+  fi
+fi
 check_marker_not_ahead() {
   local marker
   if ! marker=$(jq -r '.data | if type == "object" then (.MIGRATIONS_APPLIED_THROUGH // "") else error("missing data") end' <<< "$1"); then
@@ -271,6 +285,14 @@ case "$RESULT" in
      echo "ERROR: replay lock $LOCK remains for operator inspection before retry." >&2
      exit 1;;
 esac
+# Older API upgrade runners can mark the 0.272.0 migration complete even if
+# its TransparaMcp create failed. A successful replay Job must leave the CR
+# present before this helper advances its independent installer marker.
+if [ "$NEEDS_MCP_CR" = 1 ] &&
+   ! kubectl -n "$NS" get transparamcps.charts.transpara.com transpara-mcp -o name >/dev/null 2>&1; then
+  echo "ERROR: replay Job succeeded but TransparaMcp CR transpara-mcp is absent; replay lock remains for inspection." >&2
+  exit 1
+fi
 if [ "$DRY" = 0 ] && [ -z "$ONLY" ]; then
   STATE=$(kubectl -n "$NS" get cm tinstaller-state -o json)
   if ! check_marker_not_ahead "$STATE"; then

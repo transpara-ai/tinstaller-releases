@@ -3,9 +3,9 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.6
+version: 0.1.7
 created: 2025-08-13
-updated: 2026-10-19
+updated: 2026-10-20
 owner: Transpara AI
 steward: Codex
 project: tInstaller Releases
@@ -54,6 +54,19 @@ bash migration.sh --dry-run 0.270.0
 bash migration.sh 0.270.0
 ```
 
+For a full replay whose version window includes 0.272.0, first check that
+`transparamcps.charts.transpara.com` exists. A full installed 0.270.0 to
+0.274.0 qualification found that the direct API upgrade updated the operator
+image and marked its 0.272.0 migration complete without installing this CRD.
+The target operator's CRD must be installed through the approved operator
+deployment process before replay. Verify it is established with
+`kubectl wait --for=condition=Established crd/transparamcps.charts.transpara.com --timeout=60s`.
+The helpers reject a full apply before creating a Job when the CRD is absent.
+After a successful Job, they also require the `transpara-mcp` custom resource
+before advancing the installer migration marker. A missing resource retains
+the replay lock for inspection. A dry-run lists pending migrations without
+requiring the CRD; it does not prove that an apply can succeed.
+
 `--dry-run` does not invoke the pre- or post-upgrade migrations, but it still
 creates a Kubernetes Job using the API deployment's service account, images,
 environment and volumes to list pending migrations. The Job can run for up to
@@ -85,7 +98,9 @@ concurrent Jobs. The operator running either helper needs namespace access to:
   `tinstaller-state` (the upgrade-record lookup also lists ConfigMaps);
 - get/list/create/patch/delete Jobs, and watch Jobs and ConfigMaps while
   foreground deletion or lock cleanup completes; and
-- get/list Pods and get Pod logs for `kubectl logs job/<name>`.
+- get/list Pods and get Pod logs for `kubectl logs job/<name>`; and
+- for full replays crossing 0.272.0, get the cluster-scoped TransparaMcp CRD
+  and the `transpara-mcp` custom resource in the target namespace.
 
 The replay Job uses the API Deployment's service-account identity and needs its
 own migration permissions. A named account is copied exactly. An explicit
@@ -125,6 +140,9 @@ This adds two ConfigMap reads per full apply; the JSON patch replaces the
 previous merge patch. A dry-run or `--only` replay does not read or patch the
 marker. Stubbed tests cover these control paths; they do not qualify the API
 image, migration code, credentials or a live cluster.
+The 0.272.0 prerequisite and postcondition add at most two read requests per
+affected full apply. Their runtime cost was not measured separately; the live
+qualification records the total replay duration and node resource samples.
 
 If a process is interrupted, a Job fails, times out, or cannot be observed, or
 the helper gets an uncertain error while creating the Job or patching the state
@@ -160,3 +178,4 @@ python scripts/test-migration-helpers.py
 | 0.1.4 | 2026-10-19 | Explain range and marker regression guards, concurrent state patch protection, and why the compatibility entry point stays standalone. |
 | 0.1.5 | 2026-10-19 | Explain prerelease ordering in the version-window and marker guards. |
 | 0.1.6 | 2026-10-19 | Reject zero-padded numeric versions, including prerelease and stored marker values. |
+| 0.1.7 | 2026-10-20 | Document the missing CRD observed in a full pre-bridge upgrade and the helper's CRD prerequisite and custom-resource postcondition. |

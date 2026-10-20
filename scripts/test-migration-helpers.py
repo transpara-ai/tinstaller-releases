@@ -41,6 +41,14 @@ if "get" in args and "jobs" in args:
         ]},
     }
     print(json.dumps({"items": [{"status": prior[mode]}] if mode in prior else []}))
+elif "get" in args and "crd" in args:
+    if mode == "missing_mcp_crd":
+        raise SystemExit("simulated absent TransparaMcp CRD")
+    print("customresourcedefinition.apiextensions.k8s.io/transparamcps.charts.transpara.com")
+elif "get" in args and "transparamcps.charts.transpara.com" in args:
+    if mode == "missing_mcp_cr":
+        raise SystemExit("simulated absent TransparaMcp CR")
+    print("transparamcp.charts.transpara.com/transpara-mcp")
 elif "get" in args and "deploy" in args:
     if args[-1] == "json":
         spec = {"containers": [{"image": "registry.example/transpara/tsystem-api:1.0"}]}
@@ -59,6 +67,7 @@ elif "get" in args and "job" in args:
     successful_modes = (
         "success", "success_default_sa", "success_automount_off",
         "success_automount_on", "prior_complete", "lock_hold", "patch_unknown",
+        "missing_mcp_cr",
         "marker_advanced", "marker_race",
     )
     status = {"succeeded": 1} if mode in successful_modes else (
@@ -223,6 +232,38 @@ ClusterMigrationRunner = ModernRunner if MODERN else LegacyRunner
 
 
 class MigrationHelperSafetyTests(unittest.TestCase):
+    def test_crossing_0_272_requires_mcp_crd_before_job(self):
+        # A direct pre-bridge upgrade can update the operator image without
+        # installing its CRD. Stop before a replay restarts tauth or holds a
+        # lock that cannot be cleared without manual inspection.
+        for helper in HELPERS:
+            with self.subTest(helper=helper):
+                result, calls, job, patch, locked = run_helper(
+                    helper, "missing_mcp_crd", "0.270.0", "0.274.0"
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("install the target operator CRDs", result.stderr)
+                self.assertIsNone(job)
+                self.assertIsNone(patch)
+                self.assertFalse(locked)
+                self.assertFalse(any("create" in call for call in calls))
+
+    def test_crossing_0_272_checks_mcp_cr_before_marker_patch(self):
+        # A terminal Job alone cannot establish that a required custom
+        # resource exists; a failed postcondition retains the replay lock.
+        for helper in HELPERS:
+            for mode in ("success", "missing_mcp_cr"):
+                with self.subTest(helper=helper, mode=mode):
+                    result, _, job, patch, locked = run_helper(
+                        helper, mode, "0.270.0", "0.274.0"
+                    )
+                    self.assertIsNotNone(job)
+                    self.assertEqual(result.returncode == 0, mode == "success")
+                    self.assertEqual(patch is not None, mode == "success")
+                    self.assertEqual(locked, mode == "missing_mcp_cr")
+                    if mode == "missing_mcp_cr":
+                        self.assertIn("replay lock remains", result.stderr)
+
     def test_rejects_reversed_or_equal_version_window_before_creating_job(self):
         # A zero-work Job must never be allowed to write an older or equal
         # target into the installer migration marker.
