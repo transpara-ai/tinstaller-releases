@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-PR5-QUALIFICATION
 title: Migration replay helper qualification for PR 5
 doc_type: qualification_report
 status: draft
-version: 0.1.1
+version: 0.1.2
 created: 2026-10-20
 updated: 2026-10-20
 owner: Transpara AI
@@ -15,23 +15,25 @@ canonical: false
 
 # Migration replay helper qualification for PR 5
 
-The helper ran in two disposable Kind v1.35.0 clusters with the published
-tsystem-api 0.346.0 image pinned to digest
+The helper code at `c1f8b9d` ran in one disposable Kind v1.35.0 cluster.
+After commit `9e460fb` changed how the validated Deployment reaches Job
+construction, that helper code ran in a second disposable Kind cluster.
+Both clusters used the published tsystem-api 0.346.0 image pinned to digest
 `sha256:24c22421ab985b600f0b5e232466639c65bea717876a41d566b960fa2d76d84a`
-and the published tinstaller-migrations 0.274.0 image. The fixture modeled a
+and the published tinstaller-migrations 0.274.0 image. Each fixture modeled a
 ready post-upgrade API Deployment on a tainted node. It used a node selector,
 node affinity, a toleration, a priority class, topology spread, nonroot
 UID/GID 10001, `fsGroup` 10001, RuntimeDefault seccomp, a read-only root
 filesystem, no privilege escalation, and dropped capabilities. The fixture
-ServiceAccount had cluster-admin access only inside this disposable cluster.
+ServiceAccount had cluster-admin access only inside its disposable cluster.
 
-The helper's 0.272.0 to 0.274.0 dry-run completed in about 11 seconds and
+At `c1f8b9d`, the 0.272.0 to 0.274.0 dry-run completed in about 11 seconds and
 printed `PENDING []`. The Kubernetes API accepted the generated Job with
 `activeDeadlineSeconds: 1200` and the source scheduling and security fields.
 Both published-image containers exited successfully. The installer migration
 marker remained at 0.272.0 and the helper removed its lock. When the API
 Deployment was scaled to zero, a second dry-run stopped before Job creation;
-the Job count remained one and no lock remained. A later helper revision made
+the Job count remained one and no lock remained. Commit `9e460fb` then made
 the validated Deployment read an explicit return value for Job construction.
 Its 20 stubbed tests passed, including a Deployment that changes scheduling
 settings between reads. A second Kind dry-run of that revision completed
@@ -47,9 +49,11 @@ MCP CRD pre-applied reached the expected MCP workload, route and Secret. The
 current helper's digest guard closes the observed early-replay window when an
 upgrade has already started, subject to the snapshot race below.
 
-These Kind dry-runs verify Job admission, scheduling, published-image
-compatibility under the stated restrictions, and a rollout rejection. It does
-not verify a resource-changing replay on a full installed platform, the
+Together these Kind dry-runs verify Job admission, scheduling, published-image
+compatibility under the stated restrictions, and a rollout rejection on the
+earlier helper. The current helper has stub coverage for the same rejection
+and a live successful dry-run. This qualification does not verify a
+resource-changing replay on a full installed platform, the
 20-minute deadline firing, or exclusion of an upgrade initiated after the
 helper's snapshot checks. The published upgrade orchestrator does not honor
 the replay lock, so production replay still requires operational coordination
@@ -64,5 +68,6 @@ The helper does not revoke a token embedded in older released artifacts.
 
 | Version | Date | Change |
 | --- | --- | --- |
-| 0.1.0 | 2026-10-20 | Record full-platform observations, live final-helper dry-run and scheduling qualification, limits, and verified teardown. |
+| 0.1.0 | 2026-10-20 | Record full-platform observations, the first gate-fix helper dry-run and scheduling qualification, limits, and verified teardown. |
 | 0.1.1 | 2026-10-20 | Record the repeated dry-run after making the validated Deployment read explicit and verify its teardown. |
+| 0.1.2 | 2026-10-20 | Identify which helper revision ran in each Kind cluster and limit the live rejection claim to the earlier revision. |
