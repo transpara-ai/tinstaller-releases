@@ -231,23 +231,41 @@ kubectl -n "$NS" get deploy tsystem-api -o json | jq \
     # Preserve an explicit false: omitting it could mount a token that the
     # source Deployment deliberately suppressed.
     automountServiceAccountToken: $p.automountServiceAccountToken,
+    # Keep source Pod user/group, seccomp and sandbox settings. The Job
+    # carries its credentials and volumes, so dropping these restrictions
+    # would execute the same migration under a weaker runtime boundary.
+    securityContext: $p.securityContext,
+    runtimeClassName: $p.runtimeClassName,
+    hostUsers: $p.hostUsers,
     restartPolicy: "Never",
     imagePullSecrets: ($p.imagePullSecrets // []),
     volumes: (($p.volumes // []) + [{name: "migrations", emptyDir: {}}]),
     initContainers: (($p.initContainers // []) + [{
       name: "load-migrations", image: $mig,
       command: ["sh", "-c", "cp -a /migrations/. /shared/migrations/"],
+      securityContext: $c.securityContext,
       volumeMounts: [{name: "migrations", mountPath: "/shared/migrations"}]}]),
     containers: [{
       name: "migrate", image: $c.image,
       command: ["python", "-c", $py, $from, $to, $ns, $dry, $only],
+      securityContext: $c.securityContext,
       env: ($c.env // []), envFrom: ($c.envFrom // []),
       volumeMounts: (($c.volumeMounts // []) + [{name: "migrations", mountPath: "/shared/migrations"}])}]
   }}}}
   | if .spec.template.spec.serviceAccountName == null
     then del(.spec.template.spec.serviceAccountName) else . end
   | if .spec.template.spec.automountServiceAccountToken == null
-    then del(.spec.template.spec.automountServiceAccountToken) else . end' | kubectl -n "$NS" apply -f -
+    then del(.spec.template.spec.automountServiceAccountToken) else . end
+  | if .spec.template.spec.securityContext == null
+    then del(.spec.template.spec.securityContext) else . end
+  | if .spec.template.spec.runtimeClassName == null
+    then del(.spec.template.spec.runtimeClassName) else . end
+  | if .spec.template.spec.hostUsers == null
+    then del(.spec.template.spec.hostUsers) else . end
+  | if .spec.template.spec.initContainers[-1].securityContext == null
+    then del(.spec.template.spec.initContainers[-1].securityContext) else . end
+  | if .spec.template.spec.containers[0].securityContext == null
+    then del(.spec.template.spec.containers[0].securityContext) else . end' | kubectl -n "$NS" apply -f -
 
 echo "waiting for job/$JOB ..."
 # A failed, unobservable, or timed-out Job may already have changed the cluster.

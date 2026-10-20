@@ -52,6 +52,18 @@ elif "get" in args and "transparamcps.charts.transpara.com" in args:
 elif "get" in args and "deploy" in args:
     if args[-1] == "json":
         spec = {"containers": [{"image": "registry.example/transpara/tsystem-api:1.0"}]}
+        if mode == "success_security_context":
+            spec["securityContext"] = {
+                "runAsNonRoot": True, "runAsUser": 1001, "fsGroup": 1001,
+                "seccompProfile": {"type": "RuntimeDefault"},
+            }
+            spec["runtimeClassName"] = "gvisor"
+            spec["hostUsers"] = False
+            spec["containers"][0]["securityContext"] = {
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+                "readOnlyRootFilesystem": True,
+            }
         if mode != "success_default_sa":
             spec["serviceAccountName"] = "tsystem-api"
         if mode == "success_automount_off":
@@ -66,7 +78,7 @@ elif "get" in args and "job" in args:
         raise SystemExit("simulated Kubernetes read failure")
     successful_modes = (
         "success", "success_default_sa", "success_automount_off",
-        "success_automount_on", "prior_complete", "lock_hold", "patch_unknown",
+        "success_automount_on", "success_security_context", "prior_complete", "lock_hold", "patch_unknown",
         "missing_mcp_cr", "missing_mcp_crd",
         "marker_advanced", "marker_race",
     )
@@ -545,6 +557,41 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                             job["spec"]["template"]["spec"]["automountServiceAccountToken"],
                             expected,
                         )
+
+    def test_replay_preserves_pod_and_container_security_contexts(self):
+        # The replay Job copies the source Pod's credentials and mounted
+        # volumes. Its migrate and added init containers must retain the
+        # source runtime restrictions rather than use image defaults.
+        for helper in HELPERS:
+            with self.subTest(helper=helper):
+                result, _, job, _, _ = run_helper(
+                    helper, "success_security_context", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                pod = job["spec"]["template"]["spec"]
+                self.assertEqual(pod["securityContext"], {
+                    "runAsNonRoot": True, "runAsUser": 1001, "fsGroup": 1001,
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                })
+                self.assertEqual(pod["runtimeClassName"], "gvisor")
+                self.assertIs(pod["hostUsers"], False)
+                expected_container = {
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                    "readOnlyRootFilesystem": True,
+                }
+                self.assertEqual(pod["containers"][0]["securityContext"], expected_container)
+                self.assertEqual(pod["initContainers"][-1]["securityContext"], expected_container)
+
+                default, _, default_job, _, _ = run_helper(
+                    helper, "success", "0.272.0", "0.274.0"
+                )
+                self.assertEqual(default.returncode, 0, default.stderr)
+                default_pod = default_job["spec"]["template"]["spec"]
+                for field in ("securityContext", "runtimeClassName", "hostUsers"):
+                    self.assertNotIn(field, default_pod)
+                self.assertNotIn("securityContext", default_pod["containers"][0])
+                self.assertNotIn("securityContext", default_pod["initContainers"][-1])
 
     def test_emitted_job_supports_legacy_and_current_runner_contracts(self):
         for helper in HELPERS:

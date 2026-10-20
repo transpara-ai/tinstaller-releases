@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.1.8
+version: 0.1.9
 created: 2025-08-13
 updated: 2026-10-20
 owner: Transpara AI
@@ -110,6 +110,16 @@ The replay Job uses the API Deployment's service-account identity and needs its
 own migration permissions. A named account is copied exactly. An explicit
 `automountServiceAccountToken: false` or `true` is also copied, so a source Pod
 that suppresses bearer-token mounting cannot accidentally gain one in the Job.
+The source Pod's `securityContext`, `runtimeClassName` and `hostUsers` are
+copied when present. The API container's `securityContext` is copied to both
+the replay and added `load-migrations` containers. This preserves user/group,
+seccomp, capability, sandbox and read-only-filesystem restrictions around the
+copied credentials and volumes. Missing source settings stay omitted. A
+restricted identity may be unable to write the shared migration volume; such
+a Job fails and retains its lock. Qualify the migration image under the source
+Deployment's restrictions in a disposable cluster. Copying these fields adds
+no API requests; its scheduling and runtime cost has not been measured on a
+cluster with explicit restrictions.
 The migration runner uses in-cluster Kubernetes access; when automount is
 disabled and no other authorized Kubernetes credentials are supplied, the Job
 will fail and the helper will leave the migration state unchanged. Qualify a
@@ -185,3 +195,4 @@ python scripts/test-migration-helpers.py
 | 0.1.6 | 2026-10-19 | Reject zero-padded numeric versions, including prerelease and stored marker values. |
 | 0.1.7 | 2026-10-20 | Document the missing CRD observed in a full pre-bridge upgrade and the helper's CRD prerequisite and custom-resource postcondition. |
 | 0.1.8 | 2026-10-20 | Apply the MCP prerequisite and postcondition to matching module-scoped replays, while preserving unrelated targeted repairs. |
+| 0.1.9 | 2026-10-20 | Preserve source Pod and container security contexts and runtime sandbox settings in replay Jobs. |
