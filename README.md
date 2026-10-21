@@ -3,9 +3,9 @@ doc_id: TINSTALLER-RELEASES-README
 title: tInstaller releases quickstart and migration repair
 doc_type: readme
 status: draft
-version: 0.2.0
+version: 0.2.1
 created: 2025-08-13
-updated: 2026-10-20
+updated: 2026-10-21
 owner: Transpara AI
 steward: Codex
 project: tInstaller Releases
@@ -85,7 +85,8 @@ entry point for existing commands that pipe it directly to Bash; prefer
 `migration.sh` for new use. Its safety logic is copied deliberately because a
 remote wrapper cannot rely on `migration.sh` being present on the operator's
 machine. Both copies receive the same safety tests. Both scripts reject
-malformed versions, reversed or equal version windows, and module selectors.
+malformed versions, reversed or equal version windows, and invalid module
+selectors.
 The version-window check compares numeric release and prerelease identifiers
 by SemVer precedence, including a numeric identifier before a text identifier.
 Numeric core and prerelease identifiers with leading zeroes are invalid; both
@@ -136,7 +137,10 @@ priority class, scheduler and topology-spread constraints when present. This
 keeps it eligible for the API workload's intended nodes. An inherited
 constraint can still leave it unschedulable if capacity or policy changes;
 the server deadline stops it and the lock remains. Copying these fields adds
-no API reads. Dedicated-node scheduling has not been qualified live.
+no API reads. A disposable Kind Job completed with a tainted node, node
+selector, affinity, toleration, priority class and topology spread; see the
+[PR 5 qualification](docs/pr5-qualification.md). That fixture does not
+measure scheduling latency or capacity on production dedicated nodes.
 The migration runner uses in-cluster Kubernetes access; when automount is
 disabled and no other authorized Kubernetes credentials are supplied, the Job
 will fail and the helper will leave the migration state unchanged. Qualify a
@@ -189,7 +193,8 @@ process is still running. A missing Job or unchanged marker does not prove
 that no migration changed cluster resources. Check the affected resources and
 decide whether a full replay, a targeted repair, or no replay is safe. Only
 then delete the lock ConfigMap and retry if needed.
-The Job-list and rollout checks protect against an upgrade already underway.
+The Job-list and rollout checks reject observed unfinished upgrade Jobs and
+incomplete API rollouts.
 The published upgrade orchestrator does not use the helper's ConfigMap lock,
 so an upgrade started after those checks can overlap replay. These two writers
 cannot be made atomic by the helper alone. Restrict upgrade initiation for the
@@ -224,3 +229,4 @@ python scripts/test-migration-helpers.py
 | 0.1.8 | 2026-10-20 | Apply the MCP prerequisite and postcondition to matching module-scoped replays, while preserving unrelated targeted repairs. |
 | 0.1.9 | 2026-10-20 | Preserve source Pod and container security contexts and runtime sandbox settings in replay Jobs. |
 | 0.2.0 | 2026-10-20 | Add the Job deadline, API digest-convergence guard and scheduling constraints; record the upgrade race and published credential risk. |
+| 0.2.1 | 2026-10-21 | Align the scheduling claim with Kind evidence and clarify selector validation and observed upgrade checks. |
