@@ -320,16 +320,7 @@ jq \
       env: ($c.env // []), envFrom: ($c.envFrom // []),
       volumeMounts: (($c.volumeMounts // []) + [{name: "migrations", mountPath: "/shared/migrations"}])}]
   }}}}
-  | if .spec.template.spec.serviceAccountName == null
-    then del(.spec.template.spec.serviceAccountName) else . end
-  | if .spec.template.spec.automountServiceAccountToken == null
-    then del(.spec.template.spec.automountServiceAccountToken) else . end
-  | if .spec.template.spec.securityContext == null
-    then del(.spec.template.spec.securityContext) else . end
-  | if .spec.template.spec.runtimeClassName == null
-    then del(.spec.template.spec.runtimeClassName) else . end
-  | if .spec.template.spec.hostUsers == null
-    then del(.spec.template.spec.hostUsers) else . end
+  # Drop omitted fields at this Pod-spec level; retain false, zero and empty values.
   | .spec.template.spec |= with_entries(select(.value != null))
   | if .spec.template.spec.initContainers[-1].securityContext == null
     then del(.spec.template.spec.initContainers[-1].securityContext) else . end
