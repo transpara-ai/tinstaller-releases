@@ -3,7 +3,7 @@ doc_id: TINSTALLER-RELEASES-PR5-QUALIFICATION
 title: Migration replay helper qualification for PR 5
 doc_type: qualification_report
 status: draft
-version: 0.2.0
+version: 0.2.1
 created: 2026-10-20
 updated: 2026-10-22
 owner: Transpara AI
@@ -90,6 +90,18 @@ dry-runs. Cluster load and dedicated-node scheduling latency were not
 measured for the current-head full-platform run. The observed 73-second Job
 duration is a disposable-node result, not a production capacity estimate.
 
+## Human Critical review decision
+
+On 2026-10-22, the Human answered the task's scoped decision request with
+"Accept these risks for PR review." The request named two residuals: an
+upgrade started after the helper's checks can overlap replay, requiring
+operator coordination; and credentials in older published installers remain
+owned by upstream tInstaller issue #54. This is Codex's transcription of the
+Human's task response, not a Human-authored GitHub comment. It authorizes
+Critical Gate review of PR #5 with those risks disclosed. It does not authorize
+production replay, credential rotation, release publication, or merge. The
+tested CRD preflight remains limited to the pinned 0.270.0 to 0.274.0 pair.
+
 Published installer credential removal and rotation are tracked in
 [tInstaller issue #54](https://github.com/transpara-ai/tinstaller/issues/54).
 The helper does not revoke a token embedded in older released artifacts.
@@ -102,3 +114,4 @@ The helper does not revoke a token embedded in older released artifacts.
 | 0.1.1 | 2026-10-20 | Record the repeated dry-run after making the validated Deployment read explicit and verify its teardown. |
 | 0.1.2 | 2026-10-20 | Identify which helper revision ran in each Kind cluster and limit the live rejection claim to the earlier revision. |
 | 0.2.0 | 2026-10-22 | Add current-head full-platform resource-changing replay, live zero-replica rejection, and provider-verified teardown; retain the upgrade-start race and deadline limits. |
+| 0.2.1 | 2026-10-22 | Record the Human's scoped acceptance of residual risks for Critical PR review, separate from production and merge authority. |
