@@ -92,7 +92,7 @@ ver_lt() {
   done
   [ "${#left_parts[@]}" -lt "${#right_parts[@]}" ]
 }
-if [ -z "${2:-}" ] && valid_version "$TO" && ver_lt "${TO%%-*}" 0.274.0; then
+if [ -z "${2:-}" ] && valid_version "$TO" && ver_lt "$TO" 0.274.0; then
   # Upgrade still in flight (INSTALLER_VERSION not advanced yet): take the target from its payload.
   CM=$(kubectl -n "$NS" get cm -l app=tsystem-upgrade --sort-by=.metadata.creationTimestamp -o name | tail -1)
   [ -n "$CM" ] && TO=$(kubectl -n "$NS" get "$CM" -o jsonpath='{.data.payload\.json}' | jq -r '.request.target_version // .available_versions.tinstaller.version')
@@ -150,7 +150,9 @@ if [ "$REPO" = "$API_IMG" ]; then
 fi
 MIG_IMG="$REPO/tinstaller-migrations:$TO"
 JOB=migrations-replay-$(date +%s)-$$
-if ver_lt "${TO%%-*}" 0.274.0; then
+# SemVer orders every prerelease below its base release. Block real replays
+# until the target reaches the bridge; dry-runs can still inspect prerelease tags.
+if [ "$DRY" = 0 ] && ver_lt "$TO" 0.274.0; then
   echo "ERROR: installed version is $TO; nothing to replay (needs >= 0.274.0). Is an upgrade still running?" >&2; exit 1
 fi
 # A Job can be nonterminal with zero active Pods before creation or between

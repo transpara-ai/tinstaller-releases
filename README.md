@@ -91,6 +91,10 @@ The version-window check compares numeric release and prerelease identifiers
 by SemVer precedence, including a numeric identifier before a text identifier.
 Numeric core and prerelease identifiers with leading zeroes are invalid; both
 helpers reject them before creating a Job or advancing the migration marker.
+Real replays also require a target that is at least 0.274.0 by SemVer, so a
+target such as 0.274.0-alpha.1 is rejected before Job creation. A dry-run may
+inspect that prerelease target; it still creates a Job, but skips migration
+steps and does not advance the marker.
 This check scans the version text once and adds no Kubernetes request. Its
 latency has not been measured separately; time a long accepted tag on the
 target control-plane host if validation cost becomes material.
@@ -230,3 +234,4 @@ python scripts/test-migration-helpers.py
 | 0.1.9 | 2026-10-20 | Preserve source Pod and container security contexts and runtime sandbox settings in replay Jobs. |
 | 0.2.0 | 2026-10-20 | Add the Job deadline, API digest-convergence guard and scheduling constraints; record the upgrade race and published credential risk. |
 | 0.2.1 | 2026-10-21 | Align the scheduling claim with Kind evidence and clarify selector validation and observed upgrade checks. |
+| 0.2.2 | 2026-10-22 | Enforce the 0.274.0 SemVer bridge for real replays and test prerelease targets. |

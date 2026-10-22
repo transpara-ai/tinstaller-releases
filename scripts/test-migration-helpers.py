@@ -132,7 +132,7 @@ elif "get" in args and "job" in args:
         "deploy_scheduling_changed",
         "prior_complete", "lock_hold", "patch_unknown",
         "missing_mcp_cr", "missing_mcp_crd",
-        "marker_advanced", "marker_race",
+        "marker_advanced", "marker_race", "marker_below_bridge",
     )
     status = {"succeeded": 1} if mode in successful_modes else (
         {"failed": 1} if mode == "failed" else {})
@@ -152,7 +152,8 @@ elif "get" in args and ("cm" in args or any(arg.startswith("configmap/") for arg
         reads = root / "state-reads"
         count = int(reads.read_text()) + 1 if reads.exists() else 1
         reads.write_text(str(count))
-        marker = ("0.274.0-alpha.beta" if mode == "marker_mixed_prerelease" else
+        marker = ("0.273.0" if mode == "marker_below_bridge" else
+                  "0.274.0-alpha.beta" if mode == "marker_mixed_prerelease" else
                   "0.300.0" if mode == "marker_ahead" or
                   (mode == "marker_advanced" and count == 2) else
                   "0.274.0-alpha.01.a" if mode == "marker_zero_padded" else
@@ -430,6 +431,31 @@ class MigrationHelperSafetyTests(unittest.TestCase):
                     self.assertIsNotNone(job)
                     self.assertIsNone(patch)
                     self.assertFalse(locked)
+
+    def test_prerelease_below_bridge_blocks_real_replay_but_allows_dry_run(self):
+        # A prerelease sorts below its base release and cannot satisfy the
+        # 0.274.0 bridge. Dry-run may inspect it but must not advance state.
+        for helper in HELPERS:
+            for prefix in ((), ("--only", "target")):
+                with self.subTest(helper=helper, prefix=prefix):
+                    result, calls, job, patch, locked = run_helper(
+                        helper, "marker_below_bridge", *prefix,
+                        "0.273.0", "0.274.0-alpha.1"
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn("nothing to replay", result.stderr)
+                    self.assertIsNone(job)
+                    self.assertIsNone(patch)
+                    self.assertFalse(locked)
+                    self.assertFalse(any("create" in call for call in calls))
+            result, _, job, patch, locked = run_helper(
+                helper, "marker_below_bridge", "--dry-run",
+                "0.273.0", "0.274.0-alpha.1"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNotNone(job)
+            self.assertIsNone(patch)
+            self.assertFalse(locked)
 
     def test_prerelease_precedence_matches_numeric_and_text_identifier_rules(self):
         # This is the SemVer precedence chain. Adjacent pairs exercise the
