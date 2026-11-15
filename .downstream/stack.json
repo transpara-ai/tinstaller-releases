@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "transpara/tinstaller-releases",
+    "ref": "main",
+    "sha": "66c217d5f7a074bcfe1de768e75e3e51389a83bc"
+  },
+  "cadence": "daily",
+  "generated": [],
+  "denylist": [
+    "transpara-ai",
+    "Michael Saucier",
+    "MichaelSaucier",
+    "michael.saucier@transpara.com",
+    "corp.transpara.com",
+    "192.168."
+  ],
+  "mods": [
+    {
+      "name": "migration-replay-safety",
+      "lane": "up",
+      "status": "active",
+      "tip": "f9b680007b8854b27180f95ed9f1b3b442620a93",
+      "summary": "Preserve migration replay safety and generic helper verification."
+    },
+    {
+      "name": "migration-replay-evidence",
+      "lane": "ds",
+      "status": "active",
+      "tip": "cc67b67e2fe5cf906144f04c351f5bb5d0b88c84",
+      "depends_on": [
+        "migration-replay-safety"
+      ],
+      "summary": "Retain downstream qualification, residual risks and operator documentation."
+    },
+    {
+      "name": "agent-instructions",
+      "lane": "ds",
+      "status": "active",
+      "tip": "9c7627f608d6c6e38fa24793e7a8f7e50420615f",
+      "summary": "Retain externally installed host workflow instructions."
+    }
+  ]
+}
